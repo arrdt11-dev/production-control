@@ -11,15 +11,30 @@ from app.uow import UnitOfWork
 router = APIRouter(prefix="/api/v1/batches", tags=["Batches"])
 
 
+def batch_to_dict(b):
+    return {
+        "id": b.id,
+        "is_closed": b.is_closed,
+        "closed_at": b.closed_at,
+        "task_description": b.task_description,
+        "work_center_id": b.work_center_id,
+        "shift": b.shift,
+        "team": b.team,
+        "batch_number": b.batch_number,
+        "batch_date": b.batch_date,
+        "nomenclature": b.nomenclature,
+        "ekn_code": b.ekn_code,
+        "shift_start": b.shift_start,
+        "shift_end": b.shift_end,
+        "products": [],
+    }
+
+
 @router.post("", response_model=list[BatchRead], status_code=201)
 async def create_batches(items: list[BatchCreateIn]):
     async with UnitOfWork() as uow:
-        try:
-            created = await BatchService.create_batches(uow, items)
-        except Exception as e:
-            # уникальный constraint по batch_number+batch_date может прилететь сюда
-            raise HTTPException(status_code=400, detail=str(e))
-        return created
+        created = await BatchService.create_batches(uow, items)
+        return [batch_to_dict(b) for b in created]
 
 
 @router.get("/{batch_id}", response_model=BatchRead)
@@ -51,7 +66,9 @@ async def list_batches(
     limit: int = Query(default=20, ge=1, le=100),
 ):
     async with UnitOfWork() as uow:
-        return await BatchService.list_batches(uow, is_closed, batch_number, batch_date, work_center_id, shift, offset, limit)
+        return await BatchService.list_batches(
+            uow, is_closed, batch_number, batch_date, work_center_id, shift, offset, limit
+        )
 
 
 @router.post("/{batch_id}/aggregate")

@@ -10,13 +10,21 @@ class WorkCenterRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def get_by_id(self, work_center_id: int) -> WorkCenter | None:
-        return await self.session.get(WorkCenter, work_center_id)
+    async def add(self, wc: WorkCenter) -> None:
+        self.session.add(wc)
+
+    async def flush(self) -> None:
+        await self.session.flush()
+
+    async def get(self, wc_id: int) -> WorkCenter | None:
+        return await self.session.get(WorkCenter, wc_id)
 
     async def get_by_identifier(self, identifier: str) -> WorkCenter | None:
-        return await self.session.scalar(select(WorkCenter).where(WorkCenter.identifier == identifier))
+        res = await self.session.execute(
+            select(WorkCenter).where(WorkCenter.identifier == identifier)
+        )
+        return res.scalar_one_or_none()
 
-    async def create(self, identifier: str, name: str) -> WorkCenter:
-        wc = WorkCenter(identifier=identifier, name=name)
-        self.session.add(wc)
-        return wc
+    async def list(self) -> list[WorkCenter]:
+        res = await self.session.execute(select(WorkCenter).order_by(WorkCenter.id))
+        return list(res.scalars().all())
