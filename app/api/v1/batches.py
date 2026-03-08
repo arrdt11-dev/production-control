@@ -78,3 +78,21 @@ async def aggregate_products_sync(batch_id: int, body: AggregateSyncRequest):
         if result.get("success") is False:
             raise HTTPException(status_code=404, detail=result.get("message", "Batch not found"))
         return result
+
+from pydantic import BaseModel
+from app.tasks.aggregation import aggregate_products_batch
+
+
+class AggregateAsyncRequest(BaseModel):
+    unique_codes: list[str]
+
+
+@router.post("/{batch_id}/aggregate-async", status_code=202)
+async def aggregate_products_async(batch_id: int, body: AggregateAsyncRequest):
+    task = aggregate_products_batch.delay(batch_id=batch_id, unique_codes=body.unique_codes)
+    return {
+        "task_id": task.id,
+        "status": "PENDING",
+        "message": "Aggregation task started",
+    }
+

@@ -74,7 +74,51 @@ services:
     volumes:
       - .:/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+  celery_worker:
+    build: .
+    container_name: production_worker
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    command: celery -A app.celery_app.celery_app worker --loglevel=info
 
+  celery_beat:
+    build: .
+    container_name: production_beat
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    command: celery -A app.celery_app.celery_app beat --loglevel=info
+
+  flower:
+    build: .
+    container_name: production_flower
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    ports:
+      - "5555:5555"
+    volumes:
+      - .:/app
+    command: celery -A app.celery_app.celery_app worker --loglevel=info --pool=solo
 volumes:
   postgres_data:
   redis_data:

@@ -1,52 +1,36 @@
-from celery import states
-from celery.exceptions import Ignore
+from __future__ import annotations
+
+import asyncio
 
 from app.celery_app import celery_app
+from app.services.product_service import ProductService
+from app.uow import UnitOfWork
+
+
+async def _run_aggregate(batch_id: int, unique_codes: list[str]) -> dict:
+    async with UnitOfWork() as uow:
+        result = await ProductService.aggregate_sync(uow, batch_id, unique_codes)
+        return result
 
 
 @celery_app.task(bind=True, max_retries=3)
 def aggregate_products_batch(self, batch_id: int, unique_codes: list[str], user_id: int | None = None):
     """
     Асинхронная массовая агрегация продукции.
-    Пока базовая реализация по ТЗ с прогрессом.
+    Реальная реализация через БД.
     """
     total = len(unique_codes)
 
-    if total == 0:
-        return {
-            "success": True,
-            "total": 0,
-            "aggregated": 0,
-            "failed": 0,
-            "errors": [],
-        }
-
-    # Временная базовая реализация.
-    # Следующим шагом подключим реальную логику через сервисы/БД.
     self.update_state(
         state="PROGRESS",
         meta={"current": 0, "total": total, "progress": 0},
     )
 
-    aggregated = 0
-    failed = 0
-    errors: list[dict] = []
+    result = asyncio.run(_run_aggregate(batch_id, unique_codes))
 
-    for idx, code in enumerate(unique_codes, start=1):
-        # пока заглушка: просто имитируем обработку
-        failed += 1
-        errors.append({"code": code, "reason": "not implemented yet"})
+    self.update_state(
+        state="PROGRESS",
+        meta={"current": total, "total": total, "progress": 100},
+    )
 
-        progress = int(idx / total * 100)
-        self.update_state(
-            state="PROGRESS",
-            meta={"current": idx, "total": total, "progress": progress},
-        )
-
-    return {
-        "success": True,
-        "total": total,
-        "aggregated": aggregated,
-        "failed": failed,
-        "errors": errors,
-    }
+    return result
