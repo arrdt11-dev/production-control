@@ -35,7 +35,6 @@ class BatchRepository:
 
         self.session.add(batch)
         await self.session.flush()
-        batch.products = []
         return batch
 
     async def get(self, batch_id: int) -> Batch | None:
@@ -46,6 +45,12 @@ class BatchRepository:
         )
         res = await self.session.execute(stmt)
         return res.scalar_one_or_none()
+
+    async def get_by_id(self, batch_id: int) -> Batch | None:
+        return await self.get(batch_id)
+
+    async def get_by_id_with_products(self, batch_id: int) -> Batch | None:
+        return await self.get(batch_id)
 
     async def list(
         self,

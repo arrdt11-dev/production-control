@@ -16,6 +16,23 @@ class WorkCenterRepository:
     async def flush(self) -> None:
         await self.session.flush()
 
+    async def create(self, data=None, **kwargs) -> WorkCenter:
+        if data is not None and not kwargs:
+            if isinstance(data, WorkCenter):
+                wc = data
+            elif hasattr(data, "model_dump"):
+                wc = WorkCenter(**data.model_dump())
+            elif isinstance(data, dict):
+                wc = WorkCenter(**data)
+            else:
+                raise TypeError(f"Unsupported data type for create(): {type(data)}")
+        else:
+            wc = WorkCenter(**kwargs)
+
+        self.session.add(wc)
+        await self.session.flush()
+        return wc
+
     async def get(self, wc_id: int) -> WorkCenter | None:
         return await self.session.get(WorkCenter, wc_id)
 
