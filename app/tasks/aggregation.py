@@ -26,7 +26,20 @@ def aggregate_products_batch(self, batch_id: int, unique_codes: list[str], user_
         meta={"current": 0, "total": total, "progress": 0},
     )
 
-    result = asyncio.run(_run_aggregate(batch_id, unique_codes))
+    try:
+        result = asyncio.run(_run_aggregate(batch_id, unique_codes))
+    except Exception as e:
+        self.update_state(
+            state="FAILURE",
+            meta={
+                "success": False,
+                "error": str(e),
+                "current": 0,
+                "total": total,
+                "progress": 0,
+            },
+        )
+        raise
 
     self.update_state(
         state="PROGRESS",

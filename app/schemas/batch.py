@@ -55,7 +55,8 @@ class BatchRead(BaseModel):
     shift_start: datetime
     shift_end: datetime
 
-    products: list[ProductRead] = []
+    # важно: безопасный список
+    products: list[ProductRead] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

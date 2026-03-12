@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 from datetime import date
-from fastapi import APIRouter, HTTPException, Query
 
-from app.schemas import BatchCreateIn, BatchRead, BatchUpdate, AggregateSyncRequest
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+
+from app.schemas import (
+    AggregateSyncRequest,
+    BatchCreateIn,
+    BatchRead,
+    BatchUpdate,
+)
 from app.services.batch_service import BatchService
 from app.services.product_service import ProductService
+from app.tasks.aggregation import aggregate_products_batch
+from app.tasks.reports import generate_batch_report
 from app.uow import UnitOfWork
 
 router = APIRouter(prefix="/api/v1/batches", tags=["Batches"])
@@ -35,6 +44,15 @@ async def create_batches(items: list[BatchCreateIn]):
     async with UnitOfWork() as uow:
         created = await BatchService.create_batches(uow, items)
         return [batch_to_dict(b) for b in created]
+
+
+@router.post("/{batch_id}/reports", status_code=202)
+async def create_report(batch_id: int):
+    task = generate_batch_report.delay(batch_id)
+    return {
+        "task_id": task.id,
+        "status": "PENDING",
+    }
 
 
 @router.get("/{batch_id}", response_model=BatchRead)
@@ -79,9 +97,6 @@ async def aggregate_products_sync(batch_id: int, body: AggregateSyncRequest):
             raise HTTPException(status_code=404, detail=result.get("message", "Batch not found"))
         return result
 
-from pydantic import BaseModel
-from app.tasks.aggregation import aggregate_products_batch
-
 
 class AggregateAsyncRequest(BaseModel):
     unique_codes: list[str]
@@ -95,4 +110,3 @@ async def aggregate_products_async(batch_id: int, body: AggregateAsyncRequest):
         "status": "PENDING",
         "message": "Aggregation task started",
     }
-

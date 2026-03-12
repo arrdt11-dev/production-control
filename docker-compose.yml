@@ -55,7 +55,6 @@ services:
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"
-    # healthcheck removed for dev stability
 
   api:
     build: .
@@ -74,6 +73,7 @@ services:
     volumes:
       - .:/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
   celery_worker:
     build: .
     container_name: production_worker
@@ -88,7 +88,7 @@ services:
       - .env
     volumes:
       - .:/app
-    command: celery -A app.celery_app.celery_app worker --loglevel=info
+    command: celery -A app.celery_app.celery_app worker --loglevel=info --pool=solo --concurrency=1
 
   celery_beat:
     build: .
@@ -118,7 +118,8 @@ services:
       - "5555:5555"
     volumes:
       - .:/app
-    command: celery -A app.celery_app.celery_app worker --loglevel=info --pool=solo
+    command: celery -A app.celery_app.celery_app flower --port=5555
+
 volumes:
   postgres_data:
   redis_data:
