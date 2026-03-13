@@ -110,3 +110,19 @@ async def aggregate_products_async(batch_id: int, body: AggregateAsyncRequest):
         "status": "PENDING",
         "message": "Aggregation task started",
     }
+from fastapi.responses import Response
+from app.services.report_service import ReportService
+
+
+@router.post("/{batch_id}/reports")
+async def generate_batch_report(batch_id: int):
+    try:
+        content, filename = await ReportService.build_batch_excel(batch_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
