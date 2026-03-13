@@ -7,3 +7,4 @@ __pycache__/
 
 celerybeat-schedule
 *.xlsx
+batch_1_report.xlsx
