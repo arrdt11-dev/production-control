@@ -1,71 +1,88 @@
-from __future__ import annotations
-
 from io import BytesIO
-from typing import Any
-
+from datetime import datetime, timedelta, UTC
 from openpyxl import Workbook
-
-from app.uow import UnitOfWork
+from openpyxl.styles import Font
 
 
 class ReportService:
     @staticmethod
-    async def build_batch_excel(batch_id: int) -> tuple[bytes, str]:
-        async with UnitOfWork() as uow:
-            batch = await uow.batches.get_by_id_with_products(batch_id)
-            if not batch:
-                raise ValueError("Batch not found")
+    def generate_batch_report(batch) -> tuple[BytesIO, int]:
+        wb = Workbook()
 
-            wb = Workbook()
+        # Лист 1: Summary
+        ws_summary = wb.active
+        ws_summary.title = "Summary"
 
-            ws1 = wb.active
-            ws1.title = "Информация о партии"
-            ws1["A1"] = "Номер партии"
-            ws1["B1"] = batch.batch_number
-            ws1["A2"] = "Дата партии"
-            ws1["B2"] = str(batch.batch_date)
-            ws1["A3"] = "Статус"
-            ws1["B3"] = "Закрыта" if batch.is_closed else "Открыта"
-            ws1["A4"] = "Рабочий центр ID"
-            ws1["B4"] = batch.work_center_id
-            ws1["A5"] = "Смена"
-            ws1["B5"] = batch.shift
-            ws1["A6"] = "Бригада"
-            ws1["B6"] = batch.team
-            ws1["A7"] = "Номенклатура"
-            ws1["B7"] = batch.nomenclature
-            ws1["A8"] = "Код ЕКН"
-            ws1["B8"] = batch.ekn_code
-            ws1["A9"] = "Начало смены"
-            ws1["B9"] = str(batch.shift_start)
-            ws1["A10"] = "Окончание смены"
-            ws1["B10"] = str(batch.shift_end)
+        ws_summary["A1"] = "Batch Report"
+        ws_summary["A1"].font = Font(bold=True, size=14)
 
-            ws2 = wb.create_sheet("Продукция")
-            ws2.append(["ID", "Уникальный код", "Агрегирована", "Дата агрегации"])
-            for product in batch.products:
-                ws2.append([
-                    product.id,
-                    product.unique_code,
-                    "Да" if product.is_aggregated else "Нет",
-                    str(product.aggregated_at) if product.aggregated_at else "-",
-                ])
+        ws_summary["A3"] = "Batch ID"
+        ws_summary["B3"] = batch.id
 
-            total_products = len(batch.products)
-            aggregated = sum(1 for p in batch.products if p.is_aggregated)
-            remaining = total_products - aggregated
-            rate = round((aggregated / total_products) * 100, 2) if total_products else 0
+        ws_summary["A4"] = "Batch Name"
+        ws_summary["B4"] = getattr(batch, "name", "")
 
-            ws3 = wb.create_sheet("Статистика")
-            ws3["A1"] = "Всего продукции"
-            ws3["B1"] = total_products
-            ws3["A2"] = "Агрегировано"
-            ws3["B2"] = aggregated
-            ws3["A3"] = "Осталось"
-            ws3["B3"] = remaining
-            ws3["A4"] = "Процент выполнения"
-            ws3["B4"] = f"{rate}%"
+        ws_summary["A5"] = "Created At"
+        ws_summary["B5"] = str(getattr(batch, "created_at", ""))
 
-            stream = BytesIO()
-            wb.save(stream)
-            return stream.getvalue(), f"batch_{batch_id}_report.xlsx"
+        products = getattr(batch, "products", []) or []
+
+        ws_summary["A6"] = "Products Count"
+        ws_summary["B6"] = len(products)
+
+        # Лист 2: Products
+        ws_products = wb.create_sheet("Products")
+        headers = ["ID", "Name", "Code", "Quantity", "Price"]
+
+        for col_num, header in enumerate(headers, start=1):
+            cell = ws_products.cell(row=1, column=col_num, value=header)
+            cell.font = Font(bold=True)
+
+        total_quantity = 0
+        total_price = 0
+
+        for row_num, product in enumerate(products, start=2):
+            quantity = getattr(product, "quantity", 0) or 0
+            price = getattr(product, "price", 0) or 0
+
+            ws_products.cell(row=row_num, column=1, value=getattr(product, "id", None))
+            ws_products.cell(row=row_num, column=2, value=getattr(product, "name", ""))
+            ws_products.cell(row=row_num, column=3, value=getattr(product, "code", ""))
+            ws_products.cell(row=row_num, column=4, value=quantity)
+            ws_products.cell(row=row_num, column=5, value=price)
+
+            total_quantity += quantity
+            total_price += price
+
+        # Лист 3: Statistics
+        ws_stats = wb.create_sheet("Statistics")
+        ws_stats["A1"] = "Statistics"
+        ws_stats["A1"].font = Font(bold=True, size=14)
+
+        ws_stats["A3"] = "Total Products"
+        ws_stats["B3"] = len(products)
+
+        ws_stats["A4"] = "Total Quantity"
+        ws_stats["B4"] = total_quantity
+
+        ws_stats["A5"] = "Total Price"
+        ws_stats["B5"] = total_price
+
+        ws_stats["A6"] = "Generated At"
+        ws_stats["B6"] = datetime.now(UTC).isoformat()
+
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        file_size = len(output.getvalue())
+        return output, file_size
+
+    @staticmethod
+    def build_report_result(file_url: str, file_size: int, expires_in_hours: int = 24) -> dict:
+        expires_at = datetime.now(UTC) + timedelta(hours=expires_in_hours)
+        return {
+            "file_url": file_url,
+            "file_size": file_size,
+            "expires_at": expires_at.isoformat()
+        }
