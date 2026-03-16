@@ -1,17 +1,18 @@
-from __future__ import annotations
-
 from datetime import datetime, timezone
+
 from sqlalchemy.exc import IntegrityError
 
-from app.models import Batch, Product
+from app.models import Batch
 from app.schemas.batch import BatchCreateIn, BatchUpdate
+from app.services.webhook_service import WebhookService
+from app.tasks.webhooks import send_webhook_delivery
 from app.uow import UnitOfWork
 
 
 class BatchService:
     @staticmethod
     async def create_batches(uow: UnitOfWork, items: list[BatchCreateIn]) -> list[Batch]:
-        assert uow.work_centers and uow.batches
+        assert uow.work_centers and uow.batches and uow.webhooks
 
         created: list[Batch] = []
 
@@ -27,7 +28,7 @@ class BatchService:
                 is_closed=it.is_closed,
                 closed_at=(datetime.now(timezone.utc) if it.is_closed else None),
                 task_description=it.task_description,
-                work_center_id=wc.id,  # после flush будет
+                work_center_id=wc.id,
                 shift=it.shift,
                 team=it.team,
                 batch_number=it.batch_number,
@@ -48,11 +49,26 @@ class BatchService:
 
         assert uow.session
         result: list[Batch] = []
+        all_deliveries = []
+
         for b in created:
             await uow.session.refresh(b)
             loaded = await uow.batches.get_by_id_with_products(b.id)
             if loaded:
                 result.append(loaded)
+
+                payload = WebhookService.build_batch_created_payload(loaded)
+                deliveries = await WebhookService.create_event_deliveries(
+                    uow,
+                    event_type="batch_created",
+                    payload=payload,
+                )
+                all_deliveries.extend(deliveries)
+
+        if all_deliveries:
+            await uow.commit()
+            for delivery in all_deliveries:
+                send_webhook_delivery.delay(delivery.id)
 
         return result
 
@@ -63,25 +79,44 @@ class BatchService:
 
     @staticmethod
     async def update_batch(uow: UnitOfWork, batch_id: int, data: BatchUpdate) -> Batch | None:
-        assert uow.batches
+        assert uow.batches and uow.webhooks
+
         batch = await uow.batches.get_by_id(batch_id)
         if not batch:
             return None
 
-        # PATCH поля
-        for field, value in data.model_dump(exclude_unset=True).items():
+        was_closed = batch.is_closed
+
+        update_data = data.model_dump(exclude_unset=True)
+        for field, value in update_data.items():
             setattr(batch, field, value)
 
-        # Правила ТЗ по closed_at
-        if "is_closed" in data.model_dump(exclude_unset=True):
+        if "is_closed" in update_data:
             if batch.is_closed:
                 batch.closed_at = datetime.now(timezone.utc)
             else:
                 batch.closed_at = None
 
         await uow.commit()
+
         assert uow.session
         await uow.session.refresh(batch)
+
+        if not was_closed and batch.is_closed:
+            payload = WebhookService.build_batch_closed_payload(
+                batch,
+                statistics={},
+            )
+            deliveries = await WebhookService.create_event_deliveries(
+                uow,
+                event_type="batch_closed",
+                payload=payload,
+            )
+            if deliveries:
+                await uow.commit()
+                for delivery in deliveries:
+                    send_webhook_delivery.delay(delivery.id)
+
         return batch
 
     @staticmethod
@@ -96,4 +131,12 @@ class BatchService:
         limit: int,
     ) -> list[Batch]:
         assert uow.batches
-        return await uow.batches.list(is_closed, batch_number, batch_date, work_center_id, shift, offset, limit)
+        return await uow.batches.list(
+            is_closed,
+            batch_number,
+            batch_date,
+            work_center_id,
+            shift,
+            offset,
+            limit,
+        )

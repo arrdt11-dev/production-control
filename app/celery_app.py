@@ -10,7 +10,9 @@ celery_app = Celery(
     include=[
         "app.tasks.aggregation",
         "app.tasks.scheduled",
-         "app.tasks.reports",
+        "app.tasks.reports",
+        "app.tasks.import_export",
+        "app.tasks.webhooks",
     ],
 )
 

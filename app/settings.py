@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     minio_secret_key: str = Field(alias="MINIO_SECRET_KEY", default="minioadmin")
     minio_secure: bool = Field(alias="MINIO_SECURE", default=False)
 
+    minio_bucket_reports: str = Field(alias="MINIO_BUCKET_REPORTS", default="reports")
+    minio_bucket_exports: str = Field(alias="MINIO_BUCKET_EXPORTS", default="exports")
+    minio_bucket_imports: str = Field(alias="MINIO_BUCKET_IMPORTS", default="imports")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore",

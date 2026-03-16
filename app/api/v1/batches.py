@@ -1,19 +1,27 @@
+import os
+import tempfile
 from datetime import date
+from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
 from app.schemas.batch import (
+    AggregateAsyncRequest,
+    AggregateSyncRequest,
     BatchCreateIn,
+    BatchExportRequest,
+    BatchImportResponse,
     BatchRead,
     BatchUpdate,
-    AggregateSyncRequest,
-    AggregateAsyncRequest,
 )
 from app.services.batch_service import BatchService
 from app.services.product_service import ProductService
+from app.settings import settings
+from app.storage.minio_service import MinIOService
 from app.uow import UnitOfWork
-import app.tasks.reports as reports
 import app.tasks.aggregation as aggregation
+import app.tasks.reports as reports
+import app.tasks.import_export as import_export
 
 router = APIRouter(prefix="/api/v1/batches", tags=["Batches"])
 
@@ -65,6 +73,60 @@ async def update_batch(batch_id: int, data: BatchUpdate):
         if not batch:
             raise HTTPException(status_code=404, detail="Batch not found")
         return batch
+
+
+@router.post("/import", response_model=BatchImportResponse, status_code=202)
+async def import_batches(file: UploadFile = File(...)):
+    allowed_ext = {".csv", ".xlsx", ".xls"}
+    ext = os.path.splitext(file.filename or "")[1].lower()
+
+    if ext not in allowed_ext:
+        raise HTTPException(status_code=400, detail="Only csv/xlsx/xls files are allowed")
+
+    minio = MinIOService()
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        content = await file.read()
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    object_name = f"imports/{uuid4().hex}_{file.filename}"
+
+    try:
+        minio.upload_file(
+            bucket=settings.minio_bucket_imports,
+            file_path=tmp_path,
+            object_name=object_name,
+            expires_days=7,
+        )
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    task = import_export.import_batches_from_file.delay(
+        bucket=settings.minio_bucket_imports,
+        object_name=object_name,
+        user_id=None,
+    )
+
+    return {
+        "task_id": task.id,
+        "status": "PENDING",
+        "message": "File uploaded, import started",
+    }
+
+
+@router.post("/export", status_code=202)
+async def export_batches(body: BatchExportRequest):
+    task = import_export.export_batches_to_file.delay(
+        filters=body.filters.model_dump(exclude_none=True),
+        format=body.format,
+    )
+
+    return {
+        "task_id": task.id,
+        "status": "PENDING",
+    }
 
 
 @router.post("/{batch_id}/reports")

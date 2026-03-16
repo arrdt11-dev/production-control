@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -65,3 +66,23 @@ class AggregateSyncRequest(BaseModel):
 
 class AggregateAsyncRequest(BaseModel):
     unique_codes: list[str]
+
+
+class BatchImportResponse(BaseModel):
+    task_id: str
+    status: str
+    message: str
+
+
+class BatchExportFilters(BaseModel):
+    is_closed: bool | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    batch_number: int | None = None
+    shift: str | None = None
+    work_center_id: int | None = None
+
+
+class BatchExportRequest(BaseModel):
+    format: Literal["excel", "csv"] = "excel"
+    filters: BatchExportFilters = Field(default_factory=BatchExportFilters)
