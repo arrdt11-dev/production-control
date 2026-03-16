@@ -1,11 +1,11 @@
 from datetime import date, datetime
+
 from pydantic import BaseModel, Field
 
 from app.schemas.product import ProductRead
 
 
 class BatchCreateIn(BaseModel):
-    # вход как в ТЗ (русские поля)
     is_closed: bool = Field(default=False, validation_alias="СтатусЗакрытия")
     task_description: str = Field(validation_alias="ПредставлениеЗаданияНаСмену")
     work_center_name: str = Field(validation_alias="РабочийЦентр")
@@ -25,7 +25,6 @@ class BatchCreateIn(BaseModel):
 
 
 class BatchUpdate(BaseModel):
-    # обновление партии
     is_closed: bool | None = None
     task_description: str | None = None
     shift: str | None = None
@@ -55,11 +54,14 @@ class BatchRead(BaseModel):
     shift_start: datetime
     shift_end: datetime
 
-    # важно: безопасный список
     products: list[ProductRead] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
 
 class AggregateSyncRequest(BaseModel):
+    unique_codes: list[str]
+
+
+class AggregateAsyncRequest(BaseModel):
     unique_codes: list[str]

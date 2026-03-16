@@ -1,10 +1,19 @@
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
-from app.schemas.batch import BatchCreateIn, BatchRead, BatchUpdate
+
+from app.schemas.batch import (
+    BatchCreateIn,
+    BatchRead,
+    BatchUpdate,
+    AggregateSyncRequest,
+    AggregateAsyncRequest,
+)
 from app.services.batch_service import BatchService
+from app.services.product_service import ProductService
 from app.uow import UnitOfWork
 import app.tasks.reports as reports
+import app.tasks.aggregation as aggregation
 
 router = APIRouter(prefix="/api/v1/batches", tags=["Batches"])
 
@@ -64,4 +73,33 @@ async def create_report(batch_id: int):
     return {
         "task_id": task.id,
         "status": "PENDING",
+    }
+
+
+@router.post("/{batch_id}/aggregate")
+async def aggregate_products_sync(batch_id: int, body: AggregateSyncRequest):
+    async with UnitOfWork() as uow:
+        result = await ProductService.aggregate_sync(
+            uow,
+            batch_id,
+            body.unique_codes,
+        )
+
+        if result.get("success") is False:
+            raise HTTPException(status_code=404, detail=result.get("message"))
+
+        return result
+
+
+@router.post("/{batch_id}/aggregate-async")
+async def aggregate_products_async(batch_id: int, body: AggregateAsyncRequest):
+    task = aggregation.aggregate_products_batch.delay(
+        batch_id,
+        body.unique_codes,
+    )
+
+    return {
+        "task_id": task.id,
+        "status": "PENDING",
+        "message": "Aggregation task started",
     }
