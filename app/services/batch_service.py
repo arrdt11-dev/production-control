@@ -46,11 +46,15 @@ class BatchService:
             await uow.rollback()
             raise
 
-        # refresh ids
         assert uow.session
+        result: list[Batch] = []
         for b in created:
             await uow.session.refresh(b)
-        return created
+            loaded = await uow.batches.get_by_id_with_products(b.id)
+            if loaded:
+                result.append(loaded)
+
+        return result
 
     @staticmethod
     async def get_batch(uow: UnitOfWork, batch_id: int) -> Batch | None:
