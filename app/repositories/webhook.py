@@ -1,4 +1,4 @@
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from app.models import WebhookDelivery, WebhookSubscription
@@ -16,7 +16,9 @@ class WebhookRepository:
         return obj
 
     async def list_subscriptions(self, offset: int = 0, limit: int = 100):
-        total = await self.session.scalar(select(func.count()).select_from(WebhookSubscription))
+        total = await self.session.scalar(
+            select(func.count()).select_from(WebhookSubscription)
+        )
         result = await self.session.execute(
             select(WebhookSubscription)
             .order_by(WebhookSubscription.id.desc())

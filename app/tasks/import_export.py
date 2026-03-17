@@ -1,4 +1,3 @@
-import asyncio
 import os
 import tempfile
 from datetime import datetime
@@ -6,12 +5,18 @@ from uuid import uuid4
 
 import pandas as pd
 from celery import shared_task
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
 
-from app.database import async_session
 from app.models import Batch, WorkCenter
 from app.settings import settings
 from app.storage.minio_service import MinIOService
+
+
+SYNC_DATABASE_URL = settings.database_url.replace("+asyncpg", "")
+
+sync_engine = create_engine(SYNC_DATABASE_URL, echo=False)
+SyncSessionLocal = sessionmaker(bind=sync_engine, autoflush=False, autocommit=False)
 
 
 def _normalize_bool(value) -> bool:
@@ -59,12 +64,16 @@ def _map_import_row(row: dict) -> dict:
         "nomenclature": str(row["Номенклатура"]).strip(),
         "ekn_code": str(row["КодЕКН"]).strip(),
         "work_center_identifier": str(row["ИдентификаторРЦ"]).strip(),
-        "shift_start": _to_naive_dt(pd.to_datetime(row["ДатаВремяНачалаСмены"]).to_pydatetime()),
-        "shift_end": _to_naive_dt(pd.to_datetime(row["ДатаВремяОкончанияСмены"]).to_pydatetime()),
+        "shift_start": _to_naive_dt(
+            pd.to_datetime(row["ДатаВремяНачалаСмены"]).to_pydatetime()
+        ),
+        "shift_end": _to_naive_dt(
+            pd.to_datetime(row["ДатаВремяОкончанияСмены"]).to_pydatetime()
+        ),
     }
 
 
-async def _import_batches_async(task, bucket: str, object_name: str):
+def _import_batches_sync(task, bucket: str, object_name: str):
     minio = MinIOService()
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -78,17 +87,16 @@ async def _import_batches_async(task, bucket: str, object_name: str):
         skipped = 0
         errors: list[dict] = []
 
-        async with async_session() as db:
+        with SyncSessionLocal() as db:
             for index, row in enumerate(rows, start=1):
                 try:
                     mapped = _map_import_row(row)
 
-                    wc_result = await db.execute(
+                    work_center = db.execute(
                         select(WorkCenter).where(
                             WorkCenter.identifier == mapped["work_center_identifier"]
                         )
-                    )
-                    work_center = wc_result.scalar_one_or_none()
+                    ).scalar_one_or_none()
 
                     if work_center is None:
                         work_center = WorkCenter(
@@ -96,15 +104,14 @@ async def _import_batches_async(task, bucket: str, object_name: str):
                             name=mapped["work_center_name"],
                         )
                         db.add(work_center)
-                        await db.flush()
+                        db.flush()
 
-                    batch_result = await db.execute(
+                    existing_batch = db.execute(
                         select(Batch).where(
                             Batch.batch_number == mapped["batch_number"],
                             Batch.batch_date == mapped["batch_date"],
                         )
-                    )
-                    existing_batch = batch_result.scalar_one_or_none()
+                    ).scalar_one_or_none()
 
                     if existing_batch:
                         skipped += 1
@@ -127,7 +134,7 @@ async def _import_batches_async(task, bucket: str, object_name: str):
                             shift_end=mapped["shift_end"],
                         )
                         db.add(batch)
-                        await db.flush()
+                        db.flush()
                         created += 1
 
                     task.update_state(
@@ -141,11 +148,11 @@ async def _import_batches_async(task, bucket: str, object_name: str):
                     )
 
                 except Exception as e:
-                    await db.rollback()
+                    db.rollback()
                     skipped += 1
                     errors.append({"row": index, "error": str(e)})
 
-            await db.commit()
+            db.commit()
 
         return {
             "success": True,
@@ -158,16 +165,11 @@ async def _import_batches_async(task, bucket: str, object_name: str):
 
 @shared_task(bind=True, max_retries=1)
 def import_batches_from_file(self, bucket: str, object_name: str, user_id: int | None = None):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(_import_batches_async(self, bucket, object_name))
-    finally:
-        loop.close()
+    return _import_batches_sync(self, bucket, object_name)
 
 
-async def _export_batches_async(filters: dict, format: str):
-    async with async_session() as db:
+def _export_batches_sync(filters: dict, format: str):
+    with SyncSessionLocal() as db:
         stmt = (
             select(Batch, WorkCenter)
             .join(WorkCenter, Batch.work_center_id == WorkCenter.id)
@@ -187,8 +189,7 @@ async def _export_batches_async(filters: dict, format: str):
         if filters.get("work_center_id") is not None:
             stmt = stmt.where(Batch.work_center_id == filters["work_center_id"])
 
-        result = await db.execute(stmt)
-        rows = result.all()
+        rows = db.execute(stmt).all()
 
         data = []
         for batch, work_center in rows:
@@ -246,9 +247,4 @@ async def _export_batches_async(filters: dict, format: str):
 
 @shared_task(bind=True)
 def export_batches_to_file(self, filters: dict, format: str = "excel"):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(_export_batches_async(filters, format))
-    finally:
-        loop.close()
+    return _export_batches_sync(filters, format)

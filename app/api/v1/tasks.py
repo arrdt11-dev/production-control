@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from fastapi import APIRouter
 from celery.result import AsyncResult
 
@@ -10,16 +8,40 @@ router = APIRouter(prefix="/api/v1/tasks", tags=["Tasks"])
 
 @router.get("/{task_id}")
 async def get_task_status(task_id: str):
-    result = AsyncResult(task_id, app=celery_app)
+    try:
+        result = AsyncResult(task_id, app=celery_app)
 
-    payload = None
-    if result.status == "PROGRESS":
-        payload = result.info
-    elif result.ready():
-        payload = result.result
+        status = result.status
 
-    return {
-        "task_id": task_id,
-        "status": result.status,
-        "result": payload,
-    }
+        if status == "PROGRESS":
+            return {
+                "task_id": task_id,
+                "status": status,
+                "result": result.info,
+            }
+
+        if status == "FAILURE":
+            info = result.info
+            return {
+                "task_id": task_id,
+                "status": status,
+                "result": {
+                    "success": False,
+                    "error": str(info),
+                },
+            }
+
+        return {
+            "task_id": task_id,
+            "status": status,
+            "result": result.result if result.ready() else None,
+        }
+    except Exception as e:
+        return {
+            "task_id": task_id,
+            "status": "FAILURE",
+            "result": {
+                "success": False,
+                "error": f"Failed to read task result: {str(e)}",
+            },
+        }

@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/v1/webhooks", tags=["Webhooks"])
 async def create_webhook(body: WebhookCreate):
     async with UnitOfWork() as uow:
         obj = await WebhookService.create_subscription(uow, body)
+        await uow.commit()
         return obj
 
 
@@ -36,6 +37,7 @@ async def update_webhook(webhook_id: int, body: WebhookUpdate):
         obj = await WebhookService.update_subscription(uow, webhook_id, body)
         if not obj:
             raise HTTPException(status_code=404, detail="Webhook subscription not found")
+        await uow.commit()
         return obj
 
 
@@ -45,6 +47,7 @@ async def delete_webhook(webhook_id: int):
         deleted = await WebhookService.delete_subscription(uow, webhook_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Webhook subscription not found")
+        await uow.commit()
         return Response(status_code=204)
 
 

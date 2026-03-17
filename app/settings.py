@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     celery_broker_url: str = Field(alias="CELERY_BROKER_URL")
     celery_result_backend: str = Field(alias="CELERY_RESULT_BACKEND")
 
-    minio_endpoint: str = Field(alias="MINIO_ENDPOINT", default="production_s3:9000")
+    minio_endpoint: str = Field(alias="MINIO_ENDPOINT", default="localhost:9000")
     minio_access_key: str = Field(alias="MINIO_ACCESS_KEY", default="minioadmin")
     minio_secret_key: str = Field(alias="MINIO_SECRET_KEY", default="minioadmin")
     minio_secure: bool = Field(alias="MINIO_SECURE", default=False)

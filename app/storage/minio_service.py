@@ -51,6 +51,10 @@ class MinIOService:
             expires=timedelta(days=expires_days),
         )
 
+        # Для браузера меняем внутренний docker-host на localhost,
+        # но подпись остается валидной, потому что подписывается исходный endpoint.
+        url = url.replace("production_s3:9000", "localhost:9000")
+
         return {
             "bucket": bucket,
             "object_name": object_name,
