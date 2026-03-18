@@ -1,10 +1,14 @@
 import os
 import tempfile
 from datetime import date
+from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
+from app.database import get_db
+from app.schemas.analytics import BatchStatisticsResponse
+from app.services.analytics_service import AnalyticsService
 from app.schemas.batch import (
     AggregateAsyncRequest,
     AggregateSyncRequest,
@@ -165,3 +169,14 @@ async def aggregate_products_async(batch_id: int, body: AggregateAsyncRequest):
         "status": "PENDING",
         "message": "Aggregation task started",
     }
+
+
+@router.get("/{batch_id}/statistics", response_model=BatchStatisticsResponse)
+async def get_batch_statistics(
+    batch_id: int,
+    session: AsyncSession = Depends(get_db),
+):
+    result = await AnalyticsService.get_batch_statistics(session, batch_id)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Batch with id={batch_id} not found")
+    return result
