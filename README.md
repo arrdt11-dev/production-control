@@ -1,68 +1,61 @@
 # Production Control API
 
-Backend-сервис для управления производственными партиями и агрегацией продуктов.
+Веб-приложение для управления сменными заданиями на производстве с асинхронной обработкой задач, импортом/экспортом, файловым хранилищем и внешними интеграциями.
 
-Проект реализован на **FastAPI + Async SQLAlchemy + PostgreSQL**  
-с архитектурой **Service / Repository / Unit of Work** и запускается через **Docker**.
+## Возможности
 
----
+- управление рабочими центрами
+- создание и обновление партий
+- привязка изделий к партиям
+- синхронная и асинхронная агрегация изделий
+- импорт партий из CSV / Excel
+- экспорт партий в Excel
+- генерация отчетов
+- webhook-интеграции
+- аналитика по партиям
+- мониторинг Celery через Flower
 
-# Технологический стек
+## Стек
 
+### Backend
 - Python 3.11
 - FastAPI
-- Async SQLAlchemy
-- PostgreSQL
-- Docker / Docker Compose
-- Redis
+- SQLAlchemy 2.0 Async
+- Pydantic v2
+
+### База данных
+- PostgreSQL 16
+- Alembic
+
+### Асинхронные задачи
+- Celery
 - RabbitMQ
+- Redis
+- Celery Beat
+- Flower
 
----
+### Хранилище
+- MinIO
 
-# Возможности API
+### Инфраструктура
+- Docker
+- Docker Compose
 
-Сервис позволяет:
+## Структура проекта
 
-- создавать производственные партии
-- получать список партий
-- получать партию по ID
-- обновлять данные партии
-- агрегировать продукты внутри партии
+```text
+app/
+  api/v1/             # роутеры API
+  repositories/       # работа с БД
+  services/           # бизнес-логика
+  schemas/            # Pydantic-схемы
+  tasks/              # Celery tasks
+  storage/            # MinIO
+  migrations/         # Alembic migrations
+  main.py             # FastAPI app
+  database.py         # engine/session
+  routes.py           # общий роутер
 
----
-
-# Архитектура проекта
-
-Проект построен по многоуровневой архитектуре:
-
-**API layer**  
-обрабатывает HTTP запросы (FastAPI routers)
-
-**Service layer**  
-содержит бизнес-логику приложения
-
-**Repository layer**  
-отвечает за взаимодействие с базой данных
-
-**Unit of Work**  
-управляет транзакциями и жизненным циклом репозиториев
-
----
-
-# Структура проекта
-
-
-```production-control/
-├── app/
-│   ├── api/            # FastAPI роуты
-│   ├── models/         # SQLAlchemy модели
-│   ├── repositories/   # работа с базой данных
-│   ├── services/       # бизнес-логика
-│   ├── schemas/        # Pydantic схемы
-│   ├── uow.py          # Unit of Work
-│   └── main.py         # запуск FastAPI
-│
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-└── README.md```
+tests/
+  test_health.py
+  test_analytics.py
