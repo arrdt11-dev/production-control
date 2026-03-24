@@ -1,109 +1,119 @@
-from sqlalchemy import func, select
-from sqlalchemy.orm import selectinload
+from datetime import datetime
 
-from app.models import WebhookDelivery, WebhookSubscription
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
-class WebhookRepository:
-    def __init__(self, session):
-        self.session = session
+ALLOWED_EVENTS = {
+    "batch_created",
+    "batch_closed",
+    "report_generated",
+}
 
-    async def create_subscription(self, **kwargs) -> WebhookSubscription:
-        obj = WebhookSubscription(**kwargs)
-        self.session.add(obj)
-        await self.session.flush()
-        await self.session.refresh(obj)
-        return obj
 
-    async def list_subscriptions(self, offset: int = 0, limit: int = 100):
-        total = await self.session.scalar(
-            select(func.count()).select_from(WebhookSubscription)
-        )
-        result = await self.session.execute(
-            select(WebhookSubscription)
-            .order_by(WebhookSubscription.id.desc())
-            .offset(offset)
-            .limit(limit)
-        )
-        items = list(result.scalars().all())
-        return items, int(total or 0)
+class WebhookCreate(BaseModel):
+    url: HttpUrl
+    events: list[str] = Field(min_length=1)
+    secret_key: str = Field(min_length=8, max_length=255)
+    retry_count: int = Field(default=3, ge=0, le=10)
+    timeout: int = Field(default=10, ge=1, le=120)
 
-    async def get_subscription(self, webhook_id: int) -> WebhookSubscription | None:
-        result = await self.session.execute(
-            select(WebhookSubscription).where(WebhookSubscription.id == webhook_id)
-        )
-        return result.scalar_one_or_none()
+    @field_validator("events")
+    @classmethod
+    def validate_events(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("events must not be empty")
 
-    async def update_subscription(self, webhook_id: int, **kwargs) -> WebhookSubscription | None:
-        obj = await self.get_subscription(webhook_id)
-        if not obj:
-            return None
-
-        for key, value in kwargs.items():
-            setattr(obj, key, value)
-
-        await self.session.flush()
-        await self.session.refresh(obj)
-        return obj
-
-    async def delete_subscription(self, webhook_id: int) -> bool:
-        obj = await self.get_subscription(webhook_id)
-        if not obj:
-            return False
-        await self.session.delete(obj)
-        await self.session.flush()
-        return True
-
-    async def create_delivery(
-        self,
-        subscription_id: int,
-        event_type: str,
-        payload: dict,
-        status: str = "pending",
-        attempts: int = 0,
-    ) -> WebhookDelivery:
-        obj = WebhookDelivery(
-            subscription_id=subscription_id,
-            event_type=event_type,
-            payload=payload,
-            status=status,
-            attempts=attempts,
-        )
-        self.session.add(obj)
-        await self.session.flush()
-        await self.session.refresh(obj)
-        return obj
-
-    async def get_delivery(self, delivery_id: int) -> WebhookDelivery | None:
-        result = await self.session.execute(
-            select(WebhookDelivery)
-            .options(selectinload(WebhookDelivery.subscription))
-            .where(WebhookDelivery.id == delivery_id)
-        )
-        return result.scalar_one_or_none()
-
-    async def list_deliveries(self, webhook_id: int, offset: int = 0, limit: int = 100):
-        total = await self.session.scalar(
-            select(func.count()).select_from(WebhookDelivery).where(
-                WebhookDelivery.subscription_id == webhook_id
+        invalid = [event for event in value if event not in ALLOWED_EVENTS]
+        if invalid:
+            raise ValueError(
+                f"unsupported events: {', '.join(invalid)}. "
+                f"Allowed: {', '.join(sorted(ALLOWED_EVENTS))}"
             )
-        )
-        result = await self.session.execute(
-            select(WebhookDelivery)
-            .where(WebhookDelivery.subscription_id == webhook_id)
-            .order_by(WebhookDelivery.id.desc())
-            .offset(offset)
-            .limit(limit)
-        )
-        items = list(result.scalars().all())
-        return items, int(total or 0)
 
-    async def list_failed_deliveries(self, limit: int = 100):
-        result = await self.session.execute(
-            select(WebhookDelivery)
-            .options(selectinload(WebhookDelivery.subscription))
-            .where(WebhookDelivery.status == "failed")
-            .order_by(WebhookDelivery.id.asc())
-            .limit(limit)
-        )
-        return list(result.scalars().all())
+        return value
+
+    @field_validator("secret_key")
+    @classmethod
+    def validate_secret_key(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("secret_key must not be empty")
+        return value
+
+
+class WebhookUpdate(BaseModel):
+    url: HttpUrl | None = None
+    events: list[str] | None = None
+    secret_key: str | None = Field(default=None, min_length=8, max_length=255)
+    is_active: bool | None = None
+    retry_count: int | None = Field(default=None, ge=0, le=10)
+    timeout: int | None = Field(default=None, ge=1, le=120)
+
+    @field_validator("events")
+    @classmethod
+    def validate_events(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+
+        if not value:
+            raise ValueError("events must not be empty")
+
+        invalid = [event for event in value if event not in ALLOWED_EVENTS]
+        if invalid:
+            raise ValueError(
+                f"unsupported events: {', '.join(invalid)}. "
+                f"Allowed: {', '.join(sorted(ALLOWED_EVENTS))}"
+            )
+
+        return value
+
+    @field_validator("secret_key")
+    @classmethod
+    def validate_secret_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+
+        value = value.strip()
+        if not value:
+            raise ValueError("secret_key must not be empty")
+
+        return value
+
+
+class WebhookRead(BaseModel):
+    id: int
+    url: str
+    events: list[str]
+    is_active: bool
+    retry_count: int
+    timeout: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class WebhookDeliveryRead(BaseModel):
+    id: int
+    subscription_id: int
+    event_type: str
+    payload: dict
+    status: str
+    attempts: int
+    response_status: int | None
+    response_body: str | None
+    error_message: str | None
+    created_at: datetime
+    delivered_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class WebhookListResponse(BaseModel):
+    items: list[WebhookRead]
+    total: int
+
+
+class WebhookDeliveryListResponse(BaseModel):
+    items: list[WebhookDeliveryRead]
+    total: int

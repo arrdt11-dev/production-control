@@ -6,7 +6,6 @@ from app.repositories.webhook import WebhookRepository
 
 
 class UnitOfWork:
-
     def __init__(self):
         self.session = None
 
@@ -26,10 +25,19 @@ class UnitOfWork:
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
-        await self.session.close()
+        try:
+            if exc_type is not None and self.session is not None:
+                await self.session.rollback()
+        finally:
+            if self.session is not None:
+                await self.session.close()
 
     async def commit(self):
+        if self.session is None:
+            raise RuntimeError("UnitOfWork session is not initialized")
         await self.session.commit()
 
     async def rollback(self):
+        if self.session is None:
+            raise RuntimeError("UnitOfWork session is not initialized")
         await self.session.rollback()

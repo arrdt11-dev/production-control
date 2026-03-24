@@ -28,8 +28,8 @@ def aggregate_products_batch(
         asyncio.set_event_loop(loop)
         result = loop.run_until_complete(_run_aggregate(batch_id, unique_codes))
         return result
-    except Exception as exc:
-        raise Exception(str(exc))
+    except Exception:
+        raise
     finally:
         try:
             loop.close()

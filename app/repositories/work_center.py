@@ -10,12 +10,6 @@ class WorkCenterRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def add(self, wc: WorkCenter) -> None:
-        self.session.add(wc)
-
-    async def flush(self) -> None:
-        await self.session.flush()
-
     async def create(self, data=None, **kwargs) -> WorkCenter:
         if data is not None and not kwargs:
             if isinstance(data, WorkCenter):
@@ -31,6 +25,7 @@ class WorkCenterRepository:
 
         self.session.add(wc)
         await self.session.flush()
+        await self.session.refresh(wc)
         return wc
 
     async def get(self, wc_id: int) -> WorkCenter | None:

@@ -1,28 +1,20 @@
-from __future__ import annotations
-
-from app.models import Product
-from app.schemas.product import ProductCreate
-from app.uow import UnitOfWork
+from fastapi import HTTPException, status
 
 
 class ProductService:
     @staticmethod
-    async def add_product(uow: UnitOfWork, data: ProductCreate) -> Product:
-        assert uow.products
-        product = Product(unique_code=data.unique_code, batch_id=data.batch_id)
-        await uow.products.create(product)
-        await uow.commit()
-        assert uow.session
-        await uow.session.refresh(product)
-        return product
+    async def aggregate_sync(uow, batch_id: int, unique_codes: list[str]) -> dict:
+        if uow.products is None or uow.batches is None:
+            raise RuntimeError("UnitOfWork repositories are not initialized")
 
-    @staticmethod
-    async def aggregate_sync(uow: UnitOfWork, batch_id: int, codes: list[str]) -> dict:
-        assert uow.products and uow.batches
-        batch = await uow.batches.get_by_id(batch_id)
+        batch = await uow.batches.get(batch_id)
         if not batch:
-            return {"success": False, "message": "Batch not found"}
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Batch with id={batch_id} not found",
+            )
 
-        result = await uow.products.aggregate_codes_in_batch(batch_id, codes)
+        result = await uow.products.aggregate_codes_in_batch(batch_id, unique_codes)
+
         await uow.commit()
         return result

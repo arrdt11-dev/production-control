@@ -1,127 +1,110 @@
 from datetime import datetime, timezone
 
-from sqlalchemy.exc import IntegrityError
+from fastapi import HTTPException, status
 
-from app.models import Batch
-from app.schemas.batch import BatchCreateIn, BatchUpdate
-from app.services.webhook_service import WebhookService
-from app.tasks.webhooks import send_webhook_delivery
-from app.uow import UnitOfWork
+from app.schemas.batch import BatchCreate
+from app.schemas.webhook import EventType
 
 
 class BatchService:
     @staticmethod
-    async def create_batches(uow: UnitOfWork, items: list[BatchCreateIn]) -> list[Batch]:
-        assert uow.work_centers and uow.batches and uow.webhooks
+    async def create_batch(uow, data: BatchCreate):
+        if uow.work_centers is None or uow.batches is None or uow.webhooks is None:
+            raise RuntimeError("UnitOfWork repositories are not initialized")
 
-        created: list[Batch] = []
-
-        for it in items:
-            wc = await uow.work_centers.get_by_identifier(it.work_center_identifier)
-            if not wc:
-                wc = await uow.work_centers.create(
-                    identifier=it.work_center_identifier,
-                    name=it.work_center_name,
-                )
-
-            batch = Batch(
-                is_closed=it.is_closed,
-                closed_at=(datetime.now(timezone.utc) if it.is_closed else None),
-                task_description=it.task_description,
-                work_center_id=wc.id,
-                shift=it.shift,
-                team=it.team,
-                batch_number=it.batch_number,
-                batch_date=it.batch_date,
-                nomenclature=it.nomenclature,
-                ekn_code=it.ekn_code,
-                shift_start=it.shift_start,
-                shift_end=it.shift_end,
+        work_center = await uow.work_centers.get(data.work_center_id)
+        if not work_center:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Work center with id={data.work_center_id} not found",
             )
-            await uow.batches.create(batch)
-            created.append(batch)
 
-        try:
-            await uow.commit()
-        except IntegrityError:
-            await uow.rollback()
-            raise
+        batch = await uow.batches.create(data)
 
-        assert uow.session
-        result: list[Batch] = []
-        all_deliveries = []
-
-        for b in created:
-            await uow.session.refresh(b)
-            loaded = await uow.batches.get_by_id_with_products(b.id)
-            if loaded:
-                result.append(loaded)
-
-                payload = WebhookService.build_batch_created_payload(loaded)
-                deliveries = await WebhookService.create_event_deliveries(
-                    uow,
-                    event_type="batch_created",
-                    payload=payload,
-                )
-                all_deliveries.extend(deliveries)
-
-        if all_deliveries:
-            await uow.commit()
-            for delivery in all_deliveries:
-                send_webhook_delivery.delay(delivery.id)
-
-        return result
-
-    @staticmethod
-    async def get_batch(uow: UnitOfWork, batch_id: int) -> Batch | None:
-        assert uow.batches
-        return await uow.batches.get_by_id_with_products(batch_id)
-
-    @staticmethod
-    async def update_batch(uow: UnitOfWork, batch_id: int, data: BatchUpdate) -> Batch | None:
-        assert uow.batches and uow.webhooks
-
-        batch = await uow.batches.get_by_id(batch_id)
-        if not batch:
-            return None
-
-        was_closed = batch.is_closed
-
-        update_data = data.model_dump(exclude_unset=True)
-        for field, value in update_data.items():
-            setattr(batch, field, value)
-
-        if "is_closed" in update_data:
-            if batch.is_closed:
-                batch.closed_at = datetime.now(timezone.utc)
-            else:
-                batch.closed_at = None
+        await uow.webhooks.create_event_deliveries(
+            event_type=EventType.batch_created,
+            payload={
+                "batch_id": batch.id,
+                "batch_number": batch.batch_number,
+                "work_center_id": batch.work_center_id,
+                "planned_quantity": batch.planned_quantity,
+                "status": batch.status,
+            },
+        )
 
         await uow.commit()
+        return batch
 
-        assert uow.session
-        await uow.session.refresh(batch)
+    @staticmethod
+    async def create_batches(uow, items: list[BatchCreate]):
+        if uow.session is None:
+            raise RuntimeError("UnitOfWork.session is not initialized")
 
-        if not was_closed and batch.is_closed:
-            payload = WebhookService.build_batch_closed_payload(
-                batch,
-                statistics={},
+        created_batches = []
+
+        for item in items:
+            work_center = await uow.work_centers.get(item.work_center_id)
+            if not work_center:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Work center with id={item.work_center_id} not found",
+                )
+
+            batch = await uow.batches.create(item)
+            created_batches.append(batch)
+
+        await uow.commit()
+        return created_batches
+
+    @staticmethod
+    async def get_all_batches(uow):
+        if uow.batches is None:
+            raise RuntimeError("UnitOfWork.batches is not initialized")
+        return await uow.batches.list(
+            is_closed=None,
+            batch_number=None,
+            batch_date=None,
+            work_center_id=None,
+            shift=None,
+            offset=0,
+            limit=100,
+        )
+
+    @staticmethod
+    async def get_batch(uow, batch_id: int):
+        if uow.batches is None:
+            raise RuntimeError("UnitOfWork.batches is not initialized")
+
+        batch = await uow.batches.get(batch_id, with_products=True)
+        if not batch:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Batch with id={batch_id} not found",
             )
-            deliveries = await WebhookService.create_event_deliveries(
-                uow,
-                event_type="batch_closed",
-                payload=payload,
-            )
-            if deliveries:
-                await uow.commit()
-                for delivery in deliveries:
-                    send_webhook_delivery.delay(delivery.id)
+        return batch
 
+    @staticmethod
+    async def update_batch(uow, batch_id: int, data):
+        if uow.batches is None:
+            raise RuntimeError("UnitOfWork.batches is not initialized")
+
+        batch = await uow.batches.get(batch_id)
+        if not batch:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Batch with id={batch_id} not found",
+            )
+
+        payload = data.model_dump(exclude_none=True)
+        for key, value in payload.items():
+            setattr(batch, key, value)
+
+        await uow.commit()
         return batch
 
     @staticmethod
     async def list_batches(
-        uow: UnitOfWork,
+        uow,
         is_closed: bool | None,
         batch_number: int | None,
         batch_date,
@@ -129,14 +112,90 @@ class BatchService:
         shift: str | None,
         offset: int,
         limit: int,
-    ) -> list[Batch]:
-        assert uow.batches
+    ):
+        if uow.batches is None:
+            raise RuntimeError("UnitOfWork.batches is not initialized")
+
         return await uow.batches.list(
-            is_closed,
-            batch_number,
-            batch_date,
-            work_center_id,
-            shift,
-            offset,
-            limit,
+            is_closed=is_closed,
+            batch_number=batch_number,
+            batch_date=batch_date,
+            work_center_id=work_center_id,
+            shift=shift,
+            offset=offset,
+            limit=limit,
         )
+
+    @staticmethod
+    async def start_batch(uow, batch_id: int):
+        if uow.batches is None:
+            raise RuntimeError("UnitOfWork.batches is not initialized")
+
+        batch = await uow.batches.get(batch_id)
+        if not batch:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Batch with id={batch_id} not found",
+            )
+
+        if batch.started_at is None:
+            batch.started_at = datetime.now(timezone.utc)
+
+        batch.status = "in_progress"
+
+        await uow.commit()
+        return batch
+
+    @staticmethod
+    async def complete_batch(uow, batch_id: int):
+        if uow.batches is None:
+            raise RuntimeError("UnitOfWork.batches is not initialized")
+
+        batch = await uow.batches.get(batch_id)
+        if not batch:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Batch with id={batch_id} not found",
+            )
+
+        if batch.started_at is None:
+            batch.started_at = datetime.now(timezone.utc)
+
+        batch.completed_at = datetime.now(timezone.utc)
+        batch.status = "completed"
+
+        await uow.commit()
+        return batch
+
+    @staticmethod
+    async def get_batch_statistics(uow, batch_id: int):
+        if uow.batches is None:
+            raise RuntimeError("UnitOfWork.batches is not initialized")
+
+        batch = await uow.batches.get(batch_id, with_products=True)
+        if not batch:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Batch with id={batch_id} not found",
+            )
+
+        total_products = len(batch.products)
+        aggregated_products = sum(1 for product in batch.products if product.is_aggregated)
+        progress = (aggregated_products / total_products * 100) if total_products > 0 else 0
+
+        duration_seconds = None
+        if batch.started_at and batch.completed_at:
+            duration_seconds = (batch.completed_at - batch.started_at).total_seconds()
+
+        return {
+            "batch_id": batch.id,
+            "batch_number": batch.batch_number,
+            "status": batch.status,
+            "planned_quantity": batch.planned_quantity,
+            "total_products": total_products,
+            "aggregated_products": aggregated_products,
+            "progress_percent": round(progress, 2),
+            "started_at": batch.started_at,
+            "completed_at": batch.completed_at,
+            "duration_seconds": duration_seconds,
+        }

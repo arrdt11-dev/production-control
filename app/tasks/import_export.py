@@ -6,7 +6,7 @@ from uuid import uuid4
 import pandas as pd
 from celery import shared_task
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 
 from app.models import Batch, WorkCenter
 from app.settings import settings
@@ -15,8 +15,21 @@ from app.storage.minio_service import MinIOService
 
 SYNC_DATABASE_URL = settings.database_url.replace("+asyncpg", "")
 
-sync_engine = create_engine(SYNC_DATABASE_URL, echo=False)
-SyncSessionLocal = sessionmaker(bind=sync_engine, autoflush=False, autocommit=False)
+
+def get_sync_engine():
+    return create_engine(
+        SYNC_DATABASE_URL,
+        echo=False,
+        pool_pre_ping=True,
+        pool_recycle=3600,
+    )
+
+
+SyncSessionLocal = sessionmaker(
+    bind=get_sync_engine(),
+    autoflush=False,
+    autocommit=False,
+)
 
 
 def _normalize_bool(value) -> bool:
@@ -90,67 +103,67 @@ def _import_batches_sync(task, bucket: str, object_name: str):
         with SyncSessionLocal() as db:
             for index, row in enumerate(rows, start=1):
                 try:
-                    mapped = _map_import_row(row)
+                    with db.begin_nested():
+                        mapped = _map_import_row(row)
 
-                    work_center = db.execute(
-                        select(WorkCenter).where(
-                            WorkCenter.identifier == mapped["work_center_identifier"]
-                        )
-                    ).scalar_one_or_none()
+                        work_center = db.execute(
+                            select(WorkCenter).where(
+                                WorkCenter.identifier == mapped["work_center_identifier"]
+                            )
+                        ).scalar_one_or_none()
 
-                    if work_center is None:
-                        work_center = WorkCenter(
-                            identifier=mapped["work_center_identifier"],
-                            name=mapped["work_center_name"],
-                        )
-                        db.add(work_center)
-                        db.flush()
+                        if work_center is None:
+                            work_center = WorkCenter(
+                                identifier=mapped["work_center_identifier"],
+                                name=mapped["work_center_name"],
+                            )
+                            db.add(work_center)
+                            db.flush()
 
-                    existing_batch = db.execute(
-                        select(Batch).where(
-                            Batch.batch_number == mapped["batch_number"],
-                            Batch.batch_date == mapped["batch_date"],
-                        )
-                    ).scalar_one_or_none()
+                        existing_batch = db.execute(
+                            select(Batch).where(
+                                Batch.batch_number == mapped["batch_number"],
+                                Batch.batch_date == mapped["batch_date"],
+                            )
+                        ).scalar_one_or_none()
 
-                    if existing_batch:
-                        skipped += 1
-                        errors.append(
-                            {"row": index, "error": "Duplicate batch number and date"}
-                        )
-                    else:
-                        batch = Batch(
-                            is_closed=mapped["is_closed"],
-                            closed_at=None,
-                            task_description=mapped["task_description"],
-                            work_center_id=work_center.id,
-                            shift=mapped["shift"],
-                            team=mapped["team"],
-                            batch_number=mapped["batch_number"],
-                            batch_date=mapped["batch_date"],
-                            nomenclature=mapped["nomenclature"],
-                            ekn_code=mapped["ekn_code"],
-                            shift_start=mapped["shift_start"],
-                            shift_end=mapped["shift_end"],
-                        )
-                        db.add(batch)
-                        db.flush()
-                        created += 1
-
-                    task.update_state(
-                        state="PROGRESS",
-                        meta={
-                            "current": index,
-                            "total": total_rows,
-                            "created": created,
-                            "skipped": skipped,
-                        },
-                    )
+                        if existing_batch:
+                            skipped += 1
+                            errors.append(
+                                {"row": index, "error": "Duplicate batch number and date"}
+                            )
+                        else:
+                            batch = Batch(
+                                is_closed=mapped["is_closed"],
+                                closed_at=None,
+                                task_description=mapped["task_description"],
+                                work_center_id=work_center.id,
+                                shift=mapped["shift"],
+                                team=mapped["team"],
+                                batch_number=mapped["batch_number"],
+                                batch_date=mapped["batch_date"],
+                                nomenclature=mapped["nomenclature"],
+                                ekn_code=mapped["ekn_code"],
+                                shift_start=mapped["shift_start"],
+                                shift_end=mapped["shift_end"],
+                            )
+                            db.add(batch)
+                            db.flush()
+                            created += 1
 
                 except Exception as e:
-                    db.rollback()
                     skipped += 1
                     errors.append({"row": index, "error": str(e)})
+
+                task.update_state(
+                    state="PROGRESS",
+                    meta={
+                        "current": index,
+                        "total": total_rows,
+                        "created": created,
+                        "skipped": skipped,
+                    },
+                )
 
             db.commit()
 

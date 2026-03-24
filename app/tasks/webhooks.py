@@ -30,9 +30,18 @@ async def _send_webhook_delivery_async(delivery_id: int):
             return {"success": False, "error": f"Delivery with id={delivery_id} not found"}
 
         subscription = delivery.subscription
+
         if not subscription or not subscription.is_active:
             delivery.status = "failed"
             delivery.error_message = "Subscription inactive or missing"
+            delivery.attempts += 1
+            await session.commit()
+            return {"success": False, "error": delivery.error_message}
+
+
+        if not subscription.secret_key or not subscription.secret_key.strip():
+            delivery.status = "failed"
+            delivery.error_message = "Secret key is empty"
             delivery.attempts += 1
             await session.commit()
             return {"success": False, "error": delivery.error_message}
@@ -48,7 +57,7 @@ async def _send_webhook_delivery_async(delivery_id: int):
         try:
             async with httpx.AsyncClient(timeout=subscription.timeout) as client:
                 response = await client.post(
-                    subscription.url,
+                    str(subscription.url),
                     json=delivery.payload,
                     headers=headers,
                 )

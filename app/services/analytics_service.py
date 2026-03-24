@@ -80,7 +80,9 @@ class AnalyticsService:
 
         estimated_completion = None
         if products_per_hour > 0 and remaining > 0:
-            estimated_completion = (now + timedelta(hours=remaining / products_per_hour)).isoformat()
+            estimated_completion = (
+                now + timedelta(hours=remaining / products_per_hour)
+            ).isoformat()
 
         return {
             "batch_info": {
@@ -110,42 +112,90 @@ class AnalyticsService:
 
     @staticmethod
     async def compare_batches(session: AsyncSession, batch_ids: list[int]) -> dict:
+        if not batch_ids:
+            return {
+                "comparison": [],
+                "average": {"aggregation_rate": 0.0, "products_per_hour": 0.0},
+            }
+
+        batches = (
+            await session.execute(
+                select(Batch).where(Batch.id.in_(batch_ids))
+            )
+        ).scalars().all()
+
+        if not batches:
+            return {
+                "comparison": [],
+                "average": {"aggregation_rate": 0.0, "products_per_hour": 0.0},
+            }
+
+        stats = (
+            await session.execute(
+                select(
+                    Product.batch_id,
+                    func.count(Product.id).label("total"),
+                    func.count(Product.id)
+                    .filter(Product.is_aggregated.is_(True))
+                    .label("aggregated"),
+                )
+                .where(Product.batch_id.in_(batch_ids))
+                .group_by(Product.batch_id)
+            )
+        ).all()
+
+        stats_map = {
+            row.batch_id: {"total": row.total, "aggregated": row.aggregated}
+            for row in stats
+        }
+
         comparison = []
 
-        for batch_id in batch_ids:
-            batch = await session.get(Batch, batch_id)
-            if not batch:
-                continue
+        for batch in batches:
+            stat = stats_map.get(batch.id, {"total": 0, "aggregated": 0})
 
-            total_products = await session.scalar(
-                select(func.count(Product.id)).where(Product.batch_id == batch_id)
-            ) or 0
+            total_products = stat["total"]
+            aggregated = stat["aggregated"]
 
-            aggregated = await session.scalar(
-                select(func.count(Product.id)).where(
-                    Product.batch_id == batch_id,
-                    Product.is_aggregated.is_(True),
-                )
-            ) or 0
-
-            rate = round((aggregated / total_products * 100) if total_products else 0.0, 2)
-            duration_hours = max((batch.shift_end - batch.shift_start).total_seconds() / 3600, 0.0)
-            products_per_hour = round(
-                (aggregated / duration_hours) if duration_hours > 0 else 0.0, 2
+            rate = round(
+                (aggregated / total_products * 100) if total_products else 0.0, 2
             )
 
-            comparison.append({
-                "batch_id": batch.id,
-                "batch_number": batch.batch_number,
-                "total_products": total_products,
-                "aggregated": aggregated,
-                "rate": rate,
-                "duration_hours": round(duration_hours, 2),
-                "products_per_hour": products_per_hour,
-            })
+            duration_hours = max(
+                (batch.shift_end - batch.shift_start).total_seconds() / 3600,
+                0.0,
+            )
 
-        avg_rate = round(sum(x["rate"] for x in comparison) / len(comparison), 2) if comparison else 0.0
-        avg_pph = round(sum(x["products_per_hour"] for x in comparison) / len(comparison), 2) if comparison else 0.0
+            products_per_hour = round(
+                (aggregated / duration_hours) if duration_hours > 0 else 0.0,
+                2,
+            )
+
+            comparison.append(
+                {
+                    "batch_id": batch.id,
+                    "batch_number": batch.batch_number,
+                    "total_products": total_products,
+                    "aggregated": aggregated,
+                    "rate": rate,
+                    "duration_hours": round(duration_hours, 2),
+                    "products_per_hour": products_per_hour,
+                }
+            )
+
+        avg_rate = (
+            round(sum(x["rate"] for x in comparison) / len(comparison), 2)
+            if comparison
+            else 0.0
+        )
+
+        avg_pph = (
+            round(
+                sum(x["products_per_hour"] for x in comparison) / len(comparison), 2
+            )
+            if comparison
+            else 0.0
+        )
 
         return {
             "comparison": comparison,

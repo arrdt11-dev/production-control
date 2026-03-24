@@ -16,24 +16,21 @@ async def _run_generate_report(
     email: str | None = None,
 ) -> dict:
     if format not in {"excel", "xlsx"}:
-        raise Exception("Only excel reports are supported")
+        raise ValueError("Only excel reports are supported")
 
     async with UnitOfWork() as uow:
-        batch = await uow.batches.get_by_id(batch_id)
+        batch = await uow.batches.get(batch_id)
         if not batch:
-            raise Exception(f"Batch with id={batch_id} not found")
+            raise ValueError(f"Batch with id={batch_id} not found")
 
         output, file_size = ReportService.generate_batch_report(batch)
 
-    # имя файла
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     file_name = f"batch_{batch_id}_report_{timestamp}.xlsx"
 
-    # временный файл
     with NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
         tmp.write(output.getvalue())
         temp_path = tmp.name
-
 
     minio = MinIOService()
 
@@ -42,7 +39,6 @@ async def _run_generate_report(
         file_path=temp_path,
         object_name=file_name,
     )
-
 
     try:
         os.remove(temp_path)
@@ -77,8 +73,9 @@ def generate_batch_report(
         return loop.run_until_complete(
             _run_generate_report(batch_id, format, email)
         )
-    except Exception as exc:
-        raise Exception(str(exc))
+    except Exception:
+
+        raise
     finally:
         try:
             loop.close()

@@ -24,3 +24,8 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+minio_public_endpoint: str = Field(
+    alias="MINIO_PUBLIC_ENDPOINT",
+    default="localhost:9000",
+)

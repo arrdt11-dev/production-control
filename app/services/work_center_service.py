@@ -1,32 +1,17 @@
-from __future__ import annotations
-
-from app.models import WorkCenter
-from app.schemas.work_center import WorkCenterCreate, WorkCenterRead
-from app.uow import UnitOfWork
+from fastapi import HTTPException, status
 
 
 class WorkCenterService:
     @staticmethod
-    async def create(uow: UnitOfWork, data: WorkCenterCreate) -> WorkCenterRead:
-        assert uow.work_centers is not None
+    async def get_by_id(uow, work_center_id: int):
+        if uow.work_centers is None:
+            raise RuntimeError("UnitOfWork.work_centers is not initialized")
 
-        wc = WorkCenter(identifier=data.identifier, name=data.name)
-        await uow.work_centers.add(wc)
-        await uow.work_centers.flush()
-        return WorkCenterRead.model_validate(wc)
+        work_center = await uow.work_centers.get(work_center_id)
+        if not work_center:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Work center with id={work_center_id} not found",
+            )
 
-    @staticmethod
-    async def get(uow: UnitOfWork, work_center_id: int) -> WorkCenterRead | None:
-        assert uow.work_centers is not None
-
-        wc = await uow.work_centers.get(work_center_id)
-        if not wc:
-            return None
-        return WorkCenterRead.model_validate(wc)
-
-    @staticmethod
-    async def list(uow: UnitOfWork) -> list[WorkCenterRead]:
-        assert uow.work_centers is not None
-
-        items = await uow.work_centers.list()
-        return [WorkCenterRead.model_validate(x) for x in items]
+        return work_center

@@ -1,5 +1,6 @@
 from io import BytesIO
 from datetime import datetime, timedelta, UTC
+
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
@@ -9,74 +10,56 @@ class ReportService:
     def generate_batch_report(batch) -> tuple[BytesIO, int]:
         wb = Workbook()
 
-        # Лист 1: Summary
-        ws_summary = wb.active
-        ws_summary.title = "Summary"
+        ws = wb.active
+        ws.title = "Batch"
 
-        ws_summary["A1"] = "Batch Report"
-        ws_summary["A1"].font = Font(bold=True, size=14)
+        ws["A1"] = "Batch Report"
+        ws["A1"].font = Font(bold=True)
 
-        ws_summary["A3"] = "Batch ID"
-        ws_summary["B3"] = batch.id
+        ws["A3"] = "Batch ID"
+        ws["B3"] = batch.id
 
-        ws_summary["A4"] = "Batch Name"
-        ws_summary["B4"] = getattr(batch, "name", "")
+        ws["A4"] = "Batch Number"
+        ws["B4"] = batch.batch_number
 
-        ws_summary["A5"] = "Created At"
-        ws_summary["B5"] = str(getattr(batch, "created_at", ""))
+        ws["A5"] = "Date"
+        ws["B5"] = str(batch.batch_date)
 
-        products = getattr(batch, "products", []) or []
-
-        ws_summary["A6"] = "Products Count"
-        ws_summary["B6"] = len(products)
-
-        # Лист 2: Products
         ws_products = wb.create_sheet("Products")
-        headers = ["ID", "Name", "Code", "Quantity", "Price"]
 
-        for col_num, header in enumerate(headers, start=1):
-            cell = ws_products.cell(row=1, column=col_num, value=header)
-            cell.font = Font(bold=True)
+        headers = ["ID", "Code", "Aggregated"]
+        for i, h in enumerate(headers, 1):
+            ws_products.cell(row=1, column=i, value=h).font = Font(bold=True)
 
-        total_quantity = 0
-        total_price = 0
+        products = batch.products or []
 
-        for row_num, product in enumerate(products, start=2):
-            quantity = getattr(product, "quantity", 0) or 0
-            price = getattr(product, "price", 0) or 0
+        for row, p in enumerate(products, start=2):
+            ws_products.cell(row=row, column=1, value=p.id)
+            ws_products.cell(row=row, column=2, value=p.unique_code)
+            ws_products.cell(row=row, column=3, value=p.is_aggregated)
 
-            ws_products.cell(row=row_num, column=1, value=getattr(product, "id", None))
-            ws_products.cell(row=row_num, column=2, value=getattr(product, "name", ""))
-            ws_products.cell(row=row_num, column=3, value=getattr(product, "code", ""))
-            ws_products.cell(row=row_num, column=4, value=quantity)
-            ws_products.cell(row=row_num, column=5, value=price)
+        ws_stats = wb.create_sheet("Stats")
 
-            total_quantity += quantity
-            total_price += price
+        total = len(products)
+        aggregated = sum(1 for p in products if p.is_aggregated)
 
-        # Лист 3: Statistics
-        ws_stats = wb.create_sheet("Statistics")
-        ws_stats["A1"] = "Statistics"
-        ws_stats["A1"].font = Font(bold=True, size=14)
+        ws_stats["A1"] = "Total"
+        ws_stats["B1"] = total
 
-        ws_stats["A3"] = "Total Products"
-        ws_stats["B3"] = len(products)
+        ws_stats["A2"] = "Aggregated"
+        ws_stats["B2"] = aggregated
 
-        ws_stats["A4"] = "Total Quantity"
-        ws_stats["B4"] = total_quantity
+        ws_stats["A3"] = "Rate %"
+        ws_stats["B3"] = round((aggregated / total * 100) if total else 0, 2)
 
-        ws_stats["A5"] = "Total Price"
-        ws_stats["B5"] = total_price
-
-        ws_stats["A6"] = "Generated At"
-        ws_stats["B6"] = datetime.now(UTC).isoformat()
+        ws_stats["A5"] = "Generated"
+        ws_stats["B5"] = datetime.now(UTC).isoformat()
 
         output = BytesIO()
         wb.save(output)
         output.seek(0)
 
-        file_size = len(output.getvalue())
-        return output, file_size
+        return output, len(output.getvalue())
 
     @staticmethod
     def build_report_result(file_url: str, file_size: int, expires_in_hours: int = 24) -> dict:
@@ -84,5 +67,5 @@ class ReportService:
         return {
             "file_url": file_url,
             "file_size": file_size,
-            "expires_at": expires_at.isoformat()
+            "expires_at": expires_at.isoformat(),
         }

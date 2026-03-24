@@ -1,14 +1,16 @@
 import os
 import tempfile
 from datetime import date
-from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from sqlalchemy.ext.asyncio import AsyncSession
 
+import app.tasks.aggregation as aggregation
+import app.tasks.import_export as import_export
+import app.tasks.reports as reports
 from app.database import get_db
 from app.schemas.analytics import BatchStatisticsResponse
-from app.services.analytics_service import AnalyticsService
 from app.schemas.batch import (
     AggregateAsyncRequest,
     AggregateSyncRequest,
@@ -18,14 +20,12 @@ from app.schemas.batch import (
     BatchRead,
     BatchUpdate,
 )
+from app.services.analytics_service import AnalyticsService
 from app.services.batch_service import BatchService
 from app.services.product_service import ProductService
 from app.settings import settings
 from app.storage.minio_service import MinIOService
 from app.uow import UnitOfWork
-import app.tasks.aggregation as aggregation
-import app.tasks.reports as reports
-import app.tasks.import_export as import_export
 
 router = APIRouter(prefix="/api/v1/batches", tags=["Batches"])
 
@@ -48,7 +48,7 @@ async def list_batches(
     limit: int = Query(default=100, ge=1, le=1000),
 ):
     async with UnitOfWork() as uow:
-        batches = await BatchService.list_batches(
+        return await BatchService.list_batches(
             uow=uow,
             is_closed=is_closed,
             batch_number=batch_number,
@@ -58,7 +58,6 @@ async def list_batches(
             offset=offset,
             limit=limit,
         )
-        return batches
 
 
 @router.get("/{batch_id}", response_model=BatchRead)
@@ -79,18 +78,22 @@ async def update_batch(batch_id: int, data: BatchUpdate):
         return batch
 
 
-@router.post("/import", response_model=BatchImportResponse, status_code=202)
-async def import_batches(file: UploadFile = File(...)):
-    allowed_ext = {".csv", ".xlsx", ".xls"}
-    ext = os.path.splitext(file.filename or "")[1].lower()
 
-    if ext not in allowed_ext:
+@router.post("/files/import", response_model=BatchImportResponse, status_code=202)
+async def import_batches(file: UploadFile = File(...)):
+    max_file_size = 10 * 1024 * 1024
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in {".csv", ".xlsx", ".xls"}:
         raise HTTPException(status_code=400, detail="Only csv/xlsx/xls files are allowed")
+
+    content = await file.read()
+    if len(content) > max_file_size:
+        raise HTTPException(status_code=400, detail="File too large (max 10MB)")
 
     minio = MinIOService()
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        content = await file.read()
         tmp.write(content)
         tmp_path = tmp.name
 
@@ -120,26 +123,20 @@ async def import_batches(file: UploadFile = File(...)):
     }
 
 
-@router.post("/export", status_code=202)
+
+@router.post("/files/export", status_code=202)
 async def export_batches(body: BatchExportRequest):
     task = import_export.export_batches_to_file.delay(
         filters=body.filters.model_dump(exclude_none=True),
         format=body.format,
     )
-
-    return {
-        "task_id": task.id,
-        "status": "PENDING",
-    }
+    return {"task_id": task.id, "status": "PENDING"}
 
 
 @router.post("/{batch_id}/reports")
 async def create_report(batch_id: int):
     task = reports.generate_batch_report.delay(batch_id)
-    return {
-        "task_id": task.id,
-        "status": "PENDING",
-    }
+    return {"task_id": task.id, "status": "PENDING"}
 
 
 @router.post("/{batch_id}/aggregate")
@@ -150,10 +147,8 @@ async def aggregate_products_sync(batch_id: int, body: AggregateSyncRequest):
             batch_id,
             body.unique_codes,
         )
-
         if result.get("success") is False:
             raise HTTPException(status_code=404, detail=result.get("message"))
-
         return result
 
 
@@ -163,7 +158,6 @@ async def aggregate_products_async(batch_id: int, body: AggregateAsyncRequest):
         batch_id,
         body.unique_codes,
     )
-
     return {
         "task_id": task.id,
         "status": "PENDING",
