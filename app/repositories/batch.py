@@ -1,70 +1,42 @@
-from __future__ import annotations
-
-from datetime import date
-from typing import Any
-
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Batch
 
 
 class BatchRepository:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create(self, data: Any = None, **kwargs) -> Batch:
-        if data is not None and not kwargs:
-            if hasattr(data, "model_dump"):
-                batch = Batch(**data.model_dump())
-            elif isinstance(data, dict):
-                batch = Batch(**data)
-            else:
-                batch = data
-        else:
-            batch = Batch(**kwargs)
-
+    async def create(self, batch: Batch) -> Batch:
         self.session.add(batch)
         await self.session.flush()
         await self.session.refresh(batch)
         return batch
 
-    async def get(self, batch_id: int, with_products: bool = False) -> Batch | None:
-        stmt = select(Batch)
-
-        if with_products:
-            stmt = stmt.options(selectinload(Batch.products))
-
-        stmt = stmt.where(Batch.id == batch_id)
-
-        res = await self.session.execute(stmt)
-        return res.scalar_one_or_none()
-
     async def list(
         self,
-        is_closed: bool | None,
-        batch_number: int | None,
-        batch_date: date | None,
-        work_center_id: int | None,
-        shift: str | None,
-        offset: int,
-        limit: int,
+        offset: int = 0,
+        limit: int = 100,
     ) -> list[Batch]:
-        stmt = select(Batch).options(selectinload(Batch.products)).order_by(Batch.id.desc())
+        result = await self.session.execute(
+            select(Batch)
+            .order_by(Batch.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
 
-        if is_closed is not None:
-            stmt = stmt.where(Batch.is_closed == is_closed)
-        if batch_number is not None:
-            stmt = stmt.where(Batch.batch_number == batch_number)
-        if batch_date is not None:
-            stmt = stmt.where(Batch.batch_date == batch_date)
-        if work_center_id is not None:
-            stmt = stmt.where(Batch.work_center_id == work_center_id)
-        if shift is not None:
-            stmt = stmt.where(Batch.shift == shift)
+    async def get(self, batch_id: int) -> Batch | None:
+        result = await self.session.execute(
+            select(Batch).where(Batch.id == batch_id)
+        )
+        return result.scalar_one_or_none()
 
-        stmt = stmt.offset(offset).limit(limit)
+    async def update(self, batch: Batch, **kwargs) -> Batch:
+        for key, value in kwargs.items():
+            setattr(batch, key, value)
 
-        res = await self.session.execute(stmt)
-        return list(res.scalars().all())
+        await self.session.flush()
+        await self.session.refresh(batch)
+        return batch

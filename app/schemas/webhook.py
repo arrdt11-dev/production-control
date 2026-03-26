@@ -1,13 +1,16 @@
 from datetime import datetime
+from enum import Enum
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
-ALLOWED_EVENTS = {
-    "batch_created",
-    "batch_closed",
-    "report_generated",
-}
+class EventType(str, Enum):
+    BATCH_CREATED = "batch_created"
+    BATCH_CLOSED = "batch_closed"
+    REPORT_GENERATED = "report_generated"
+
+
+ALLOWED_EVENTS = {event.value for event in EventType}
 
 
 class WebhookCreate(BaseModel):
@@ -29,6 +32,7 @@ class WebhookCreate(BaseModel):
                 f"unsupported events: {', '.join(invalid)}. "
                 f"Allowed: {', '.join(sorted(ALLOWED_EVENTS))}"
             )
+
         return value
 
     @field_validator("secret_key")
@@ -53,6 +57,7 @@ class WebhookUpdate(BaseModel):
     def validate_events(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             return value
+
         if not value:
             raise ValueError("events must not be empty")
 
@@ -62,6 +67,7 @@ class WebhookUpdate(BaseModel):
                 f"unsupported events: {', '.join(invalid)}. "
                 f"Allowed: {', '.join(sorted(ALLOWED_EVENTS))}"
             )
+
         return value
 
     @field_validator("secret_key")
@@ -69,9 +75,11 @@ class WebhookUpdate(BaseModel):
     def validate_secret_key(cls, value: str | None) -> str | None:
         if value is None:
             return value
+
         value = value.strip()
         if not value:
             raise ValueError("secret_key must not be empty")
+
         return value
 
 

@@ -1,0 +1,2 @@
+batch_number,work_center_id,batch_date,shift_start,shift_end,task_description,shift,team,nomenclature,ekn_code,is_closed
+2001,1,2026-03-26,2026-03-26T08:00:00Z,2026-03-26T20:00:00Z,Imported batch,A,Team 1,Item A,EKN-001,false

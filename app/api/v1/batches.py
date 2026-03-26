@@ -1,6 +1,4 @@
 import os
-import tempfile
-from datetime import date
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -24,7 +22,7 @@ from app.services.analytics_service import AnalyticsService
 from app.services.batch_service import BatchService
 from app.services.product_service import ProductService
 from app.settings import settings
-from app.storage.minio_service import MinIOService
+from app.storage.minio_service import MinioService
 from app.uow import UnitOfWork
 
 router = APIRouter(prefix="/api/v1/batches", tags=["Batches"])
@@ -39,81 +37,63 @@ async def create_batches(items: list[BatchCreateIn]):
 
 @router.get("/", response_model=list[BatchRead])
 async def list_batches(
-    is_closed: bool | None = None,
-    batch_number: int | None = None,
-    batch_date: date | None = None,
-    work_center_id: int | None = None,
-    shift: str | None = None,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
 ):
     async with UnitOfWork() as uow:
-        return await BatchService.list_batches(
+        batches, _total = await BatchService.list_batches(
             uow=uow,
-            is_closed=is_closed,
-            batch_number=batch_number,
-            batch_date=batch_date,
-            work_center_id=work_center_id,
-            shift=shift,
             offset=offset,
             limit=limit,
         )
+        return batches
 
 
 @router.get("/{batch_id}", response_model=BatchRead)
 async def get_batch(batch_id: int):
     async with UnitOfWork() as uow:
-        batch = await BatchService.get_batch(uow, batch_id)
-        if not batch:
-            raise HTTPException(status_code=404, detail="Batch not found")
-        return batch
+        return await BatchService.get_batch(uow, batch_id)
 
 
 @router.patch("/{batch_id}", response_model=BatchRead)
 async def update_batch(batch_id: int, data: BatchUpdate):
     async with UnitOfWork() as uow:
-        batch = await BatchService.update_batch(uow, batch_id, data)
-        if not batch:
-            raise HTTPException(status_code=404, detail="Batch not found")
-        return batch
-
+        return await BatchService.update_batch(uow, batch_id, data)
 
 
 @router.post("/files/import", response_model=BatchImportResponse, status_code=202)
 async def import_batches(file: UploadFile = File(...)):
-    max_file_size = 10 * 1024 * 1024
-
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in {".csv", ".xlsx", ".xls"}:
-        raise HTTPException(status_code=400, detail="Only csv/xlsx/xls files are allowed")
+        raise HTTPException(
+            status_code=400,
+            detail="Only csv/xlsx/xls files are allowed",
+        )
 
     content = await file.read()
-    if len(content) > max_file_size:
-        raise HTTPException(status_code=400, detail="File too large (max 10MB)")
 
-    minio = MinIOService()
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
+    if len(content) > settings.max_upload_file_size:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"File too large. Maximum size is "
+                f"{settings.max_upload_file_size // 1024 // 1024} MB"
+            ),
+        )
 
     object_name = f"imports/{uuid4().hex}_{file.filename}"
+    minio = MinioService()
 
-    try:
-        minio.upload_file(
-            bucket=settings.minio_bucket_imports,
-            file_path=tmp_path,
-            object_name=object_name,
-            expires_days=7,
-        )
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    minio.upload_bytes(
+        bucket_name=settings.minio_bucket_imports,
+        object_name=object_name,
+        content=content,
+        content_type=file.content_type or "application/octet-stream",
+    )
 
     task = import_export.import_batches_from_file.delay(
-        bucket=settings.minio_bucket_imports,
-        object_name=object_name,
-        user_id=None,
+        file_bytes=content,
+        filename=file.filename or object_name,
     )
 
     return {
@@ -123,17 +103,16 @@ async def import_batches(file: UploadFile = File(...)):
     }
 
 
-
 @router.post("/files/export", status_code=202)
 async def export_batches(body: BatchExportRequest):
-    task = import_export.export_batches_to_file.delay(
-        filters=body.filters.model_dump(exclude_none=True),
-        format=body.format,
-    )
+    filters = body.filters.model_dump(exclude_none=True) if body.filters else {}
+    batch_ids = filters.get("batch_ids")
+
+    task = import_export.export_batches_to_file.delay(batch_ids=batch_ids)
     return {"task_id": task.id, "status": "PENDING"}
 
 
-@router.post("/{batch_id}/reports")
+@router.post("/{batch_id}/reports", status_code=202)
 async def create_report(batch_id: int):
     task = reports.generate_batch_report.delay(batch_id)
     return {"task_id": task.id, "status": "PENDING"}
@@ -152,7 +131,7 @@ async def aggregate_products_sync(batch_id: int, body: AggregateSyncRequest):
         return result
 
 
-@router.post("/{batch_id}/aggregate-async")
+@router.post("/{batch_id}/aggregate-async", status_code=202)
 async def aggregate_products_async(batch_id: int, body: AggregateAsyncRequest):
     task = aggregation.aggregate_products_batch.delay(
         batch_id,
@@ -172,5 +151,8 @@ async def get_batch_statistics(
 ):
     result = await AnalyticsService.get_batch_statistics(session, batch_id)
     if not result:
-        raise HTTPException(status_code=404, detail=f"Batch with id={batch_id} not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Batch with id={batch_id} not found",
+        )
     return result

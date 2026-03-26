@@ -1,6 +1,3 @@
-from __future__ import annotations
-
-from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,11 +5,8 @@ from app.models import Product
 
 
 class ProductRepository:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession):
         self.session = session
-
-    async def get_by_unique_code(self, code: str) -> Product | None:
-        return await self.session.scalar(select(Product).where(Product.unique_code == code))
 
     async def create(self, product: Product) -> Product:
         self.session.add(product)
@@ -20,39 +14,37 @@ class ProductRepository:
         await self.session.refresh(product)
         return product
 
-    async def aggregate_codes_in_batch(self, batch_id: int, codes: list[str]) -> dict:
-        now = datetime.now(timezone.utc)
+    async def get(self, product_id: int) -> Product | None:
+        result = await self.session.execute(
+            select(Product).where(Product.id == product_id)
+        )
+        return result.scalar_one_or_none()
 
-        result = {
-            "success": True,
-            "total": len(codes),
-            "aggregated": 0,
-            "failed": 0,
-            "errors": [],
-        }
-
-        res = await self.session.execute(
+    async def get_by_unique_code_in_batch(
+        self,
+        batch_id: int,
+        unique_code: str,
+    ) -> Product | None:
+        result = await self.session.execute(
             select(Product).where(
                 Product.batch_id == batch_id,
-                Product.unique_code.in_(codes),
+                Product.unique_code == unique_code,
             )
         )
-        found = {p.unique_code: p for p in res.scalars().all()}
+        return result.scalar_one_or_none()
 
-        for code in codes:
-            p = found.get(code)
-            if not p:
-                result["failed"] += 1
-                result["errors"].append({"code": code, "reason": "not found in batch"})
-                continue
+    async def list_by_batch(self, batch_id: int) -> list[Product]:
+        result = await self.session.execute(
+            select(Product)
+            .where(Product.batch_id == batch_id)
+            .order_by(Product.id)
+        )
+        return list(result.scalars().all())
 
-            if p.is_aggregated:
-                result["failed"] += 1
-                result["errors"].append({"code": code, "reason": "already aggregated"})
-                continue
+    async def update(self, product: Product, **kwargs) -> Product:
+        for key, value in kwargs.items():
+            setattr(product, key, value)
 
-            p.is_aggregated = True
-            p.aggregated_at = now
-            result["aggregated"] += 1
-
-        return result
+        await self.session.flush()
+        await self.session.refresh(product)
+        return product

@@ -1,26 +1,21 @@
-from __future__ import annotations
-
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 
-class WorkCenterCreate(BaseModel):
-    identifier: str = Field(..., max_length=50, min_length=1)
-    name: str = Field(..., max_length=255, min_length=1)
+class WorkCenterBase(BaseModel):
+    identifier: str = Field(min_length=1, max_length=50)
+    name: str = Field(min_length=1, max_length=255)
 
 
-class WorkCenterRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+class WorkCenterCreate(WorkCenterBase):
+    pass
 
+
+class WorkCenterUpdate(BaseModel):
+    identifier: str | None = Field(default=None, min_length=1, max_length=50)
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+
+
+class WorkCenterRead(WorkCenterBase):
     id: int
-    identifier: str
-    name: str
 
-
-class WorkCenterRef(BaseModel):
-    """
-    Короткая ссылка на РЦ (для вложенных ответов/связей).
-    """
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    identifier: str
+    model_config = {"from_attributes": True}

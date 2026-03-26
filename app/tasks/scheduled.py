@@ -1,9 +1,9 @@
-import asyncio
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.celery_app import celery_app
-from app.database import async_session
-from app.repositories.webhook import WebhookRepository
-from app.tasks.webhooks import send_webhook_delivery
+from app.models import WebhookDelivery
+from app.tasks.webhooks import get_sync_session_local, send_webhook_delivery
 
 
 @celery_app.task
@@ -23,13 +23,17 @@ def update_cached_statistics():
 
 @celery_app.task
 def retry_failed_webhooks():
-    return asyncio.run(_retry_failed_webhooks_async())
+    db = get_sync_session_local()()
 
-
-async def _retry_failed_webhooks_async():
-    async with async_session() as session:
-        repo = WebhookRepository(session)
-        failed_deliveries = await repo.list_failed_deliveries(limit=100)
+    try:
+        failed_deliveries = list(
+            db.execute(
+                select(WebhookDelivery)
+                .options(selectinload(WebhookDelivery.subscription))
+                .where(WebhookDelivery.status == "failed")
+                .limit(100)
+            ).scalars().all()
+        )
 
         retried = 0
         total = len(failed_deliveries)
@@ -37,13 +41,12 @@ async def _retry_failed_webhooks_async():
         for delivery in failed_deliveries:
             subscription = delivery.subscription
 
-            if not subscription:
+            if subscription is None:
                 continue
 
             if not subscription.is_active:
                 continue
 
-            # если лимит уже достигнут — больше не ретраим
             if delivery.attempts >= subscription.retry_count:
                 continue
 
@@ -55,3 +58,5 @@ async def _retry_failed_webhooks_async():
             "retried": retried,
             "total": total,
         }
+    finally:
+        db.close()

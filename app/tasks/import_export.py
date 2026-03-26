@@ -1,263 +1,246 @@
-import os
-import tempfile
-from datetime import datetime
-from uuid import uuid4
+from __future__ import annotations
 
-import pandas as pd
-from celery import shared_task
+import csv
+import io
+from datetime import datetime, timezone
+from typing import Any
+
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Batch, WorkCenter
+from app.celery_app import celery_app
+from app.models import Batch
 from app.settings import settings
-from app.storage.minio_service import MinIOService
+from app.storage.minio_service import MinioService
 
-
-SYNC_DATABASE_URL = settings.database_url.replace("+asyncpg", "")
+_sync_engine = None
+_SyncSessionLocal = None
 
 
 def get_sync_engine():
-    return create_engine(
-        SYNC_DATABASE_URL,
-        echo=False,
-        pool_pre_ping=True,
-        pool_recycle=3600,
-    )
+    global _sync_engine
+
+    if _sync_engine is None:
+        sync_database_url = settings.database_url.replace("+asyncpg", "")
+        _sync_engine = create_engine(
+            sync_database_url,
+            pool_size=5,
+            max_overflow=10,
+            pool_pre_ping=True,
+            pool_recycle=settings.db_pool_recycle,
+            future=True,
+        )
+
+    return _sync_engine
 
 
-SyncSessionLocal = sessionmaker(
-    bind=get_sync_engine(),
-    autoflush=False,
-    autocommit=False,
-)
+def get_sync_session_local():
+    global _SyncSessionLocal
+
+    if _SyncSessionLocal is None:
+        _SyncSessionLocal = sessionmaker(
+            bind=get_sync_engine(),
+            autoflush=False,
+            autocommit=False,
+            expire_on_commit=False,
+        )
+
+    return _SyncSessionLocal
 
 
-def _normalize_bool(value) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    if isinstance(value, (int, float)):
-        return bool(value)
-    text = str(value).strip().lower()
-    return text in {"true", "1", "yes", "y", "да"}
-
-
-def _to_naive_dt(value):
-    if value is None:
-        return None
-    if getattr(value, "tzinfo", None) is not None:
-        return value.replace(tzinfo=None)
-    return value
-
-
-def _read_import_file(file_path: str) -> list[dict]:
-    ext = os.path.splitext(file_path)[1].lower()
-
-    if ext == ".csv":
-        df = pd.read_csv(file_path)
-    elif ext in {".xlsx", ".xls"}:
-        df = pd.read_excel(file_path)
-    else:
-        raise ValueError("Unsupported file format. Use csv/xlsx/xls")
-
-    df = df.where(pd.notna(df), None)
-    return df.to_dict(orient="records")
-
-
-def _map_import_row(row: dict) -> dict:
+def _serialize_batch(batch: Batch) -> dict[str, Any]:
     return {
-        "is_closed": _normalize_bool(row.get("СтатусЗакрытия", False)),
-        "task_description": str(row["ПредставлениеЗаданияНаСмену"]).strip(),
-        "work_center_name": str(row["РабочийЦентр"]).strip(),
-        "shift": str(row["Смена"]).strip(),
-        "team": str(row["Бригада"]).strip(),
-        "batch_number": int(row["НомерПартии"]),
-        "batch_date": pd.to_datetime(row["ДатаПартии"]).date(),
-        "nomenclature": str(row["Номенклатура"]).strip(),
-        "ekn_code": str(row["КодЕКН"]).strip(),
-        "work_center_identifier": str(row["ИдентификаторРЦ"]).strip(),
-        "shift_start": _to_naive_dt(
-            pd.to_datetime(row["ДатаВремяНачалаСмены"]).to_pydatetime()
-        ),
-        "shift_end": _to_naive_dt(
-            pd.to_datetime(row["ДатаВремяОкончанияСмены"]).to_pydatetime()
-        ),
+        "id": batch.id,
+        "batch_number": batch.batch_number,
+        "work_center_id": batch.work_center_id,
+        "batch_date": str(batch.batch_date) if batch.batch_date else None,
+        "shift_start": batch.shift_start.isoformat() if batch.shift_start else None,
+        "shift_end": batch.shift_end.isoformat() if batch.shift_end else None,
+        "task_description": batch.task_description,
+        "shift": getattr(batch, "shift", "") or "",
+        "team": getattr(batch, "team", "") or "",
+        "nomenclature": getattr(batch, "nomenclature", "") or "",
+        "ekn_code": getattr(batch, "ekn_code", "") or "",
+        "is_closed": batch.is_closed,
+        "created_at": batch.created_at.isoformat()
+        if getattr(batch, "created_at", None)
+        else None,
+        "updated_at": batch.updated_at.isoformat()
+        if getattr(batch, "updated_at", None)
+        else None,
     }
 
 
-def _import_batches_sync(task, bucket: str, object_name: str):
-    minio = MinIOService()
+@celery_app.task(name="app.tasks.import_export.export_batches_to_file")
+def export_batches_to_file(batch_ids: list[int] | None = None) -> dict[str, Any]:
+    db = get_sync_session_local()()
+    minio_service = MinioService()
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        local_path = os.path.join(tmpdir, os.path.basename(object_name))
-        minio.download_file(bucket=bucket, object_name=object_name, file_path=local_path)
+    try:
+        stmt = select(Batch)
+        if batch_ids:
+            stmt = stmt.where(Batch.id.in_(batch_ids))
 
-        rows = _read_import_file(local_path)
-        total_rows = len(rows)
+        batches = list(db.execute(stmt).scalars().all())
 
-        created = 0
-        skipped = 0
-        errors: list[dict] = []
+        output = io.StringIO()
+        writer = csv.writer(output)
 
-        with SyncSessionLocal() as db:
-            for index, row in enumerate(rows, start=1):
-                try:
-                    with db.begin_nested():
-                        mapped = _map_import_row(row)
+        writer.writerow(
+            [
+                "id",
+                "batch_number",
+                "work_center_id",
+                "batch_date",
+                "shift_start",
+                "shift_end",
+                "task_description",
+                "shift",
+                "team",
+                "nomenclature",
+                "ekn_code",
+                "is_closed",
+                "created_at",
+                "updated_at",
+            ]
+        )
 
-                        work_center = db.execute(
-                            select(WorkCenter).where(
-                                WorkCenter.identifier == mapped["work_center_identifier"]
-                            )
-                        ).scalar_one_or_none()
+        for batch in batches:
+            row = _serialize_batch(batch)
+            writer.writerow(
+                [
+                    row["id"],
+                    row["batch_number"],
+                    row["work_center_id"],
+                    row["batch_date"],
+                    row["shift_start"],
+                    row["shift_end"],
+                    row["task_description"],
+                    row["shift"],
+                    row["team"],
+                    row["nomenclature"],
+                    row["ekn_code"],
+                    row["is_closed"],
+                    row["created_at"],
+                    row["updated_at"],
+                ]
+            )
 
-                        if work_center is None:
-                            work_center = WorkCenter(
-                                identifier=mapped["work_center_identifier"],
-                                name=mapped["work_center_name"],
-                            )
-                            db.add(work_center)
-                            db.flush()
+        content = output.getvalue().encode("utf-8")
+        file_name = (
+            f"batches_export_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+        )
 
-                        existing_batch = db.execute(
-                            select(Batch).where(
-                                Batch.batch_number == mapped["batch_number"],
-                                Batch.batch_date == mapped["batch_date"],
-                            )
-                        ).scalar_one_or_none()
-
-                        if existing_batch:
-                            skipped += 1
-                            errors.append(
-                                {"row": index, "error": "Duplicate batch number and date"}
-                            )
-                        else:
-                            batch = Batch(
-                                is_closed=mapped["is_closed"],
-                                closed_at=None,
-                                task_description=mapped["task_description"],
-                                work_center_id=work_center.id,
-                                shift=mapped["shift"],
-                                team=mapped["team"],
-                                batch_number=mapped["batch_number"],
-                                batch_date=mapped["batch_date"],
-                                nomenclature=mapped["nomenclature"],
-                                ekn_code=mapped["ekn_code"],
-                                shift_start=mapped["shift_start"],
-                                shift_end=mapped["shift_end"],
-                            )
-                            db.add(batch)
-                            db.flush()
-                            created += 1
-
-                except Exception as e:
-                    skipped += 1
-                    errors.append({"row": index, "error": str(e)})
-
-                task.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "current": index,
-                        "total": total_rows,
-                        "created": created,
-                        "skipped": skipped,
-                    },
-                )
-
-            db.commit()
+        file_url = minio_service.upload_bytes(
+            bucket_name=settings.minio_bucket_exports,
+            object_name=file_name,
+            content=content,
+            content_type="text/csv",
+        )
 
         return {
             "success": True,
-            "total_rows": total_rows,
+            "file_name": file_name,
+            "file_url": file_url,
+            "exported_count": len(batches),
+        }
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.tasks.import_export.import_batches_from_file")
+def import_batches_from_file(file_bytes: bytes, filename: str) -> dict[str, Any]:
+    db = get_sync_session_local()()
+
+    created = 0
+    skipped = 0
+    errors: list[dict[str, Any]] = []
+
+    try:
+        decoded = file_bytes.decode("utf-8")
+        reader = csv.DictReader(io.StringIO(decoded))
+
+        for index, row in enumerate(reader, start=2):
+            try:
+                with db.begin_nested():
+                    batch_number_raw = row.get("batch_number")
+                    work_center_id_raw = row.get("work_center_id")
+                    batch_date_raw = row.get("batch_date")
+                    shift_start_raw = row.get("shift_start")
+                    shift_end_raw = row.get("shift_end")
+                    task_description = row.get("task_description") or ""
+
+                    if not batch_number_raw:
+                        raise ValueError("batch_number is required")
+                    if not work_center_id_raw:
+                        raise ValueError("work_center_id is required")
+                    if not batch_date_raw:
+                        raise ValueError("batch_date is required")
+                    if not shift_start_raw:
+                        raise ValueError("shift_start is required")
+                    if not shift_end_raw:
+                        raise ValueError("shift_end is required")
+
+                    batch_number = int(batch_number_raw)
+                    work_center_id = int(work_center_id_raw)
+                    batch_date = datetime.fromisoformat(batch_date_raw).date()
+                    shift_start = datetime.fromisoformat(
+                        shift_start_raw.replace("Z", "+00:00")
+                    )
+                    shift_end = datetime.fromisoformat(
+                        shift_end_raw.replace("Z", "+00:00")
+                    )
+
+                    existing = db.execute(
+                        select(Batch).where(Batch.batch_number == batch_number)
+                    ).scalar_one_or_none()
+
+                    if existing is not None:
+                        raise ValueError(f"batch_number={batch_number} already exists")
+
+                    batch = Batch(
+                        batch_number=batch_number,
+                        work_center_id=work_center_id,
+                        batch_date=batch_date,
+                        shift_start=shift_start,
+                        shift_end=shift_end,
+                        task_description=task_description,
+                        shift=row.get("shift") or "",
+                        team=row.get("team") or "",
+                        nomenclature=row.get("nomenclature") or "",
+                        ekn_code=row.get("ekn_code") or "",
+                        is_closed=str(row.get("is_closed", "false")).lower() == "true",
+                    )
+
+                    db.add(batch)
+                    db.flush()
+                    created += 1
+
+            except Exception as exc:
+                skipped += 1
+                errors.append(
+                    {
+                        "row": index,
+                        "error": str(exc),
+                    }
+                )
+
+        db.commit()
+
+        return {
+            "success": True,
+            "filename": filename,
             "created": created,
             "skipped": skipped,
             "errors": errors,
         }
 
-
-@shared_task(bind=True, max_retries=1)
-def import_batches_from_file(self, bucket: str, object_name: str, user_id: int | None = None):
-    return _import_batches_sync(self, bucket, object_name)
-
-
-def _export_batches_sync(filters: dict, format: str):
-    with SyncSessionLocal() as db:
-        stmt = (
-            select(Batch, WorkCenter)
-            .join(WorkCenter, Batch.work_center_id == WorkCenter.id)
-            .order_by(Batch.id.desc())
-        )
-
-        if filters.get("is_closed") is not None:
-            stmt = stmt.where(Batch.is_closed == filters["is_closed"])
-        if filters.get("batch_number") is not None:
-            stmt = stmt.where(Batch.batch_number == filters["batch_number"])
-        if filters.get("date_from") is not None:
-            stmt = stmt.where(Batch.batch_date >= filters["date_from"])
-        if filters.get("date_to") is not None:
-            stmt = stmt.where(Batch.batch_date <= filters["date_to"])
-        if filters.get("shift") is not None:
-            stmt = stmt.where(Batch.shift == filters["shift"])
-        if filters.get("work_center_id") is not None:
-            stmt = stmt.where(Batch.work_center_id == filters["work_center_id"])
-
-        rows = db.execute(stmt).all()
-
-        data = []
-        for batch, work_center in rows:
-            data.append(
-                {
-                    "ID": batch.id,
-                    "СтатусЗакрытия": batch.is_closed,
-                    "ДатаЗакрытия": _to_naive_dt(batch.closed_at),
-                    "ПредставлениеЗаданияНаСмену": batch.task_description,
-                    "РабочийЦентр": work_center.name,
-                    "ИдентификаторРЦ": work_center.identifier,
-                    "Смена": batch.shift,
-                    "Бригада": batch.team,
-                    "НомерПартии": batch.batch_number,
-                    "ДатаПартии": batch.batch_date,
-                    "Номенклатура": batch.nomenclature,
-                    "КодЕКН": batch.ekn_code,
-                    "ДатаВремяНачалаСмены": _to_naive_dt(batch.shift_start),
-                    "ДатаВремяОкончанияСмены": _to_naive_dt(batch.shift_end),
-                    "Создано": _to_naive_dt(batch.created_at),
-                    "Обновлено": _to_naive_dt(batch.updated_at),
-                }
-            )
-
-        df = pd.DataFrame(data)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            ext = "xlsx" if format == "excel" else "csv"
-            filename = f"batches_export_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}.{ext}"
-            local_path = os.path.join(tmpdir, filename)
-
-            if format == "excel":
-                df.to_excel(local_path, index=False)
-            elif format == "csv":
-                df.to_csv(local_path, index=False)
-            else:
-                raise ValueError("Unsupported export format")
-
-            minio = MinIOService()
-            upload_result = minio.upload_file(
-                bucket=settings.minio_bucket_exports,
-                file_path=local_path,
-                object_name=filename,
-                expires_days=7,
-            )
-
-            return {
-                "success": True,
-                "file_url": upload_result["file_url"],
-                "file_name": filename,
-                "file_size": upload_result["file_size"],
-                "total_batches": len(data),
-            }
-
-
-@shared_task(bind=True)
-def export_batches_to_file(self, filters: dict, format: str = "excel"):
-    return _export_batches_sync(filters, format)
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
