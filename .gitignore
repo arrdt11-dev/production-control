@@ -39,4 +39,5 @@ imports/
 
 # MinIO/local temp
 tmp/
-temp/
+temp/test.csv
+webhook.py
