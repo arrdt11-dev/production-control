@@ -7,30 +7,23 @@ celery_app = Celery(
     "production_control",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
+    include=[
+        "app.tasks.aggregation",
+        "app.tasks.scheduled",
+        "app.tasks.reports",
+        "app.tasks.import_export",
+        "app.tasks.webhooks",
+    ],
 )
-
-celery_app.autodiscover_tasks(["app"])
 
 celery_app.conf.update(
     task_track_started=True,
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
-
     timezone="UTC",
     enable_utc=True,
-
     result_expires=3600 * 24,
-
-    # reliability
-    task_acks_late=True,
-    worker_prefetch_multiplier=1,
-    task_reject_on_worker_lost=True,
-
-    # time limits
-    task_time_limit=300,
-    task_soft_time_limit=240,
-
     beat_schedule={
         "auto-close-expired-batches": {
             "task": "app.tasks.scheduled.auto_close_expired_batches",

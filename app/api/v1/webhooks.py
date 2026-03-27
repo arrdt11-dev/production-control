@@ -8,6 +8,7 @@ from app.schemas.webhook import (
     WebhookUpdate,
 )
 from app.services.webhook_service import WebhookService
+from app.tasks.webhooks import send_webhook_delivery
 from app.uow import UnitOfWork
 
 router = APIRouter(prefix="/api/v1/webhooks", tags=["Webhooks"])
@@ -58,5 +59,17 @@ async def list_webhook_deliveries(
     limit: int = Query(default=100, ge=1, le=1000),
 ):
     async with UnitOfWork() as uow:
-        items, total = await WebhookService.list_deliveries(uow, webhook_id, offset=offset, limit=limit)
+        items, total = await WebhookService.list_deliveries(
+            uow, webhook_id, offset=offset, limit=limit
+        )
         return {"items": items, "total": total}
+
+
+@router.post("/deliveries/{delivery_id}/retry")
+async def retry_webhook_delivery(delivery_id: int):
+    task = send_webhook_delivery.delay(delivery_id)
+    return {
+        "status": "queued",
+        "delivery_id": delivery_id,
+        "task_id": task.id,
+    }
