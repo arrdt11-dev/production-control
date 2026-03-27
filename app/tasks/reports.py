@@ -11,13 +11,14 @@ async def _run_generate_report(batch_id: int) -> dict[str, Any]:
         return await ReportService.generate_batch_report(uow, batch_id)
 
 
-@celery_app.task(name="generate_batch_report")
-def generate_batch_report(batch_id: int) -> dict[str, Any]:
+@celery_app.task(
+    bind=True,
+    max_retries=3,
+    name="app.tasks.reports.generate_batch_report",
+)
+def generate_batch_report(self, batch_id: int) -> dict[str, Any]:
     try:
         return asyncio.run(_run_generate_report(batch_id))
-    except Exception as e:
-        return {
-            "success": False,
-            "batch_id": batch_id,
-            "error": str(e),
-        }
+    except Exception as exc:
+        # можно добавить retry
+        raise self.retry(exc=exc, countdown=10)

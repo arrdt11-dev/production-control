@@ -43,6 +43,17 @@ class WebhookRepository:
         items = list(result.scalars().all())
         return items, total
 
+    async def get_active_by_event(self, event: str) -> list[WebhookSubscription]:
+        result = await self.session.execute(
+            select(WebhookSubscription)
+            .where(
+                WebhookSubscription.is_active.is_(True),
+                WebhookSubscription.events.contains([event]),
+            )
+            .order_by(WebhookSubscription.id.desc())
+        )
+        return list(result.scalars().all())
+
     async def update_subscription(
         self,
         subscription: WebhookSubscription,

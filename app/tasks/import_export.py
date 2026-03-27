@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import create_engine, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app.celery_app import celery_app
@@ -63,12 +63,8 @@ def _serialize_batch(batch: Batch) -> dict[str, Any]:
         "nomenclature": getattr(batch, "nomenclature", "") or "",
         "ekn_code": getattr(batch, "ekn_code", "") or "",
         "is_closed": batch.is_closed,
-        "created_at": batch.created_at.isoformat()
-        if getattr(batch, "created_at", None)
-        else None,
-        "updated_at": batch.updated_at.isoformat()
-        if getattr(batch, "updated_at", None)
-        else None,
+        "created_at": batch.created_at.isoformat() if getattr(batch, "created_at", None) else None,
+        "updated_at": batch.updated_at.isoformat() if getattr(batch, "updated_at", None) else None,
     }
 
 
@@ -87,50 +83,45 @@ def export_batches_to_file(batch_ids: list[int] | None = None) -> dict[str, Any]
         output = io.StringIO()
         writer = csv.writer(output)
 
-        writer.writerow(
-            [
-                "id",
-                "batch_number",
-                "work_center_id",
-                "batch_date",
-                "shift_start",
-                "shift_end",
-                "task_description",
-                "shift",
-                "team",
-                "nomenclature",
-                "ekn_code",
-                "is_closed",
-                "created_at",
-                "updated_at",
-            ]
-        )
+        writer.writerow([
+            "id",
+            "batch_number",
+            "work_center_id",
+            "batch_date",
+            "shift_start",
+            "shift_end",
+            "task_description",
+            "shift",
+            "team",
+            "nomenclature",
+            "ekn_code",
+            "is_closed",
+            "created_at",
+            "updated_at",
+        ])
 
         for batch in batches:
             row = _serialize_batch(batch)
-            writer.writerow(
-                [
-                    row["id"],
-                    row["batch_number"],
-                    row["work_center_id"],
-                    row["batch_date"],
-                    row["shift_start"],
-                    row["shift_end"],
-                    row["task_description"],
-                    row["shift"],
-                    row["team"],
-                    row["nomenclature"],
-                    row["ekn_code"],
-                    row["is_closed"],
-                    row["created_at"],
-                    row["updated_at"],
-                ]
-            )
+            writer.writerow([
+                row["id"],
+                row["batch_number"],
+                row["work_center_id"],
+                row["batch_date"],
+                row["shift_start"],
+                row["shift_end"],
+                row["task_description"],
+                row["shift"],
+                row["team"],
+                row["nomenclature"],
+                row["ekn_code"],
+                row["is_closed"],
+                row["created_at"],
+                row["updated_at"],
+            ])
 
         content = output.getvalue().encode("utf-8")
-        file_name = (
-            f"batches_export_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
-        )
+
+        file_name = f"batches_export_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
 
         file_url = minio_service.upload_bytes(
             bucket_name=settings.minio_bucket_exports,
@@ -145,6 +136,7 @@ def export_batches_to_file(batch_ids: list[int] | None = None) -> dict[str, Any]
             "file_url": file_url,
             "exported_count": len(batches),
         }
+
     finally:
         db.close()
 
@@ -164,40 +156,16 @@ def import_batches_from_file(file_bytes: bytes, filename: str) -> dict[str, Any]
         for index, row in enumerate(reader, start=2):
             try:
                 with db.begin_nested():
-                    batch_number_raw = row.get("batch_number")
-                    work_center_id_raw = row.get("work_center_id")
-                    batch_date_raw = row.get("batch_date")
-                    shift_start_raw = row.get("shift_start")
-                    shift_end_raw = row.get("shift_end")
-                    task_description = row.get("task_description") or ""
+                    batch_number = int(row["batch_number"])
+                    work_center_id = int(row["work_center_id"])
+                    batch_date = datetime.fromisoformat(row["batch_date"]).date()
 
-                    if not batch_number_raw:
-                        raise ValueError("batch_number is required")
-                    if not work_center_id_raw:
-                        raise ValueError("work_center_id is required")
-                    if not batch_date_raw:
-                        raise ValueError("batch_date is required")
-                    if not shift_start_raw:
-                        raise ValueError("shift_start is required")
-                    if not shift_end_raw:
-                        raise ValueError("shift_end is required")
-
-                    batch_number = int(batch_number_raw)
-                    work_center_id = int(work_center_id_raw)
-                    batch_date = datetime.fromisoformat(batch_date_raw).date()
                     shift_start = datetime.fromisoformat(
-                        shift_start_raw.replace("Z", "+00:00")
+                        row["shift_start"].replace("Z", "+00:00")
                     )
                     shift_end = datetime.fromisoformat(
-                        shift_end_raw.replace("Z", "+00:00")
+                        row["shift_end"].replace("Z", "+00:00")
                     )
-
-                    existing = db.execute(
-                        select(Batch).where(Batch.batch_number == batch_number)
-                    ).scalar_one_or_none()
-
-                    if existing is not None:
-                        raise ValueError(f"batch_number={batch_number} already exists")
 
                     batch = Batch(
                         batch_number=batch_number,
@@ -205,7 +173,7 @@ def import_batches_from_file(file_bytes: bytes, filename: str) -> dict[str, Any]
                         batch_date=batch_date,
                         shift_start=shift_start,
                         shift_end=shift_end,
-                        task_description=task_description,
+                        task_description=row.get("task_description") or "",
                         shift=row.get("shift") or "",
                         team=row.get("team") or "",
                         nomenclature=row.get("nomenclature") or "",
@@ -217,14 +185,19 @@ def import_batches_from_file(file_bytes: bytes, filename: str) -> dict[str, Any]
                     db.flush()
                     created += 1
 
+            except IntegrityError:
+                skipped += 1
+                errors.append({
+                    "row": index,
+                    "error": "duplicate batch (batch_number + date)",
+                })
+
             except Exception as exc:
                 skipped += 1
-                errors.append(
-                    {
-                        "row": index,
-                        "error": str(exc),
-                    }
-                )
+                errors.append({
+                    "row": index,
+                    "error": str(exc),
+                })
 
         db.commit()
 
@@ -236,11 +209,9 @@ def import_batches_from_file(file_bytes: bytes, filename: str) -> dict[str, Any]
             "errors": errors,
         }
 
-    except SQLAlchemyError:
-        db.rollback()
-        raise
     except Exception:
         db.rollback()
         raise
+
     finally:
         db.close()

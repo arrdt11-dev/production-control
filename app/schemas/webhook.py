@@ -16,7 +16,7 @@ ALLOWED_EVENTS = {event.value for event in EventType}
 class WebhookCreate(BaseModel):
     url: HttpUrl
     events: list[str] = Field(min_length=1)
-    secret_key: str = Field(min_length=8, max_length=255)
+    secret_key: str = Field(min_length=16, max_length=255)
     retry_count: int = Field(default=3, ge=0, le=10)
     timeout: int = Field(default=10, ge=1, le=120)
 
@@ -47,7 +47,7 @@ class WebhookCreate(BaseModel):
 class WebhookUpdate(BaseModel):
     url: HttpUrl | None = None
     events: list[str] | None = None
-    secret_key: str | None = Field(default=None, min_length=8, max_length=255)
+    secret_key: str | None = Field(default=None, min_length=16, max_length=255)
     is_active: bool | None = None
     retry_count: int | None = Field(default=None, ge=0, le=10)
     timeout: int | None = Field(default=None, ge=1, le=120)

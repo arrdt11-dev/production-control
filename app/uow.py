@@ -27,9 +27,8 @@ class UnitOfWork:
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         try:
-            if self.session is not None:
-                if exc_type is not None:
-                    await self.session.rollback()
+            if self.session is not None and exc_type is not None:
+                await self.session.rollback()
         finally:
             if self.session is not None:
                 await self.session.close()

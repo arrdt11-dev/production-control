@@ -9,6 +9,12 @@ from app.models import Batch, Product
 
 class AnalyticsService:
     @staticmethod
+    def _ensure_utc(dt):
+        if dt is None:
+            return None
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+    @staticmethod
     async def get_dashboard(session: AsyncSession) -> dict:
         stmt = select(
             func.count(Batch.id).label("total_batches"),
@@ -87,18 +93,10 @@ class AnalyticsService:
         elapsed_hours = 0.0
         products_per_hour = 0.0
 
-        if batch.shift_start and batch.shift_end:
-            start_dt = (
-                batch.shift_start.replace(tzinfo=timezone.utc)
-                if batch.shift_start.tzinfo is None
-                else batch.shift_start
-            )
-            end_dt = (
-                batch.shift_end.replace(tzinfo=timezone.utc)
-                if batch.shift_end.tzinfo is None
-                else batch.shift_end
-            )
+        start_dt = AnalyticsService._ensure_utc(batch.shift_start)
+        end_dt = AnalyticsService._ensure_utc(batch.shift_end)
 
+        if start_dt and end_dt:
             shift_duration_hours = round(
                 (end_dt - start_dt).total_seconds() / 3600,
                 2,
@@ -186,17 +184,11 @@ class AnalyticsService:
 
         for row in rows:
             duration_hours = 0.0
-            if row.shift_start and row.shift_end:
-                start_dt = (
-                    row.shift_start.replace(tzinfo=timezone.utc)
-                    if row.shift_start.tzinfo is None
-                    else row.shift_start
-                )
-                end_dt = (
-                    row.shift_end.replace(tzinfo=timezone.utc)
-                    if row.shift_end.tzinfo is None
-                    else row.shift_end
-                )
+
+            start_dt = AnalyticsService._ensure_utc(row.shift_start)
+            end_dt = AnalyticsService._ensure_utc(row.shift_end)
+
+            if start_dt and end_dt:
                 duration_hours = round(
                     (end_dt - start_dt).total_seconds() / 3600,
                     2,

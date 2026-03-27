@@ -7,9 +7,7 @@ from app.uow import UnitOfWork
 
 async def _run_aggregate(batch_id: int, unique_codes: list[str]) -> dict:
     async with UnitOfWork() as uow:
-        result = await ProductService.aggregate_sync(uow, batch_id, unique_codes)
-        await uow.commit()
-        return result
+        return await ProductService.aggregate_sync(uow, batch_id, unique_codes)
 
 
 @celery_app.task(
@@ -28,8 +26,6 @@ def aggregate_products_batch(
         asyncio.set_event_loop(loop)
         result = loop.run_until_complete(_run_aggregate(batch_id, unique_codes))
         return result
-    except Exception:
-        raise
     finally:
         try:
             loop.close()
